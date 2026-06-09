@@ -31,8 +31,8 @@ export async function uploadFile(file, key, onProgress) {
       mimeType: file.type
     }
     const uploadConfig = {
-      useCdnDomain: true,
-      region: qiniu.region.z0  // 华东-浙江，避免自动检测失败
+      useCdnDomain: false,
+      uphost: ['up.qiniup.com', 'upload.qiniup.com', 'up.qiniu.com', 'upload.qiniu.com']
     }
 
     const observable = qiniu.upload(file, key, token, putExtra, uploadConfig)
