@@ -57,7 +57,9 @@ export default {
  * 生成 Qiniu 上传凭证
  */
 async function handleUploadToken(request, env, corsHeaders) {
-  const { accessKey, secretKey, bucket } = env
+  const accessKey = env.QINIU_ACCESS_KEY
+  const secretKey = env.QINIU_SECRET_KEY
+  const bucket = env.QINIU_BUCKET
 
   const putPolicy = {
     scope: bucket,
@@ -85,7 +87,9 @@ async function handleBatchDelete(request, env, corsHeaders) {
     })
   }
 
-  const { accessKey, secretKey, bucket } = env
+  const accessKey = env.QINIU_ACCESS_KEY
+  const secretKey = env.QINIU_SECRET_KEY
+  const bucket = env.QINIU_BUCKET
 
   // batch delete API: POST /delete/<encodedBucket>
   const encodedBucket = base64UrlSafe(bucket)

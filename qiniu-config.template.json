@@ -1,0 +1,5 @@
+{
+  "accessKey": "你的七牛云AccessKey",
+  "secretKey": "你的七牛云SecretKey",
+  "bucket": "你的Bucket名称"
+}
