@@ -114,6 +114,7 @@ import { getAllImages, addImageMeta, getAllHashes, deleteImage, getSetting } fro
 import { computeHash, isDuplicate } from '../utils/hash.js'
 import { uploadFile, getImageUrl, getThumbnailUrl, generateId, batchDeleteFiles } from '../api/qiniu.js'
 import config from '../config.js'
+import heic2any from 'heic2any'
 
 const images = ref([])
 const loading = ref(false)
@@ -190,8 +191,25 @@ async function onFileChange(event) {
 
   for (const file of files) {
     try {
+      // Convert HEIC/HEIF to JPEG first
+      let processedFile = file
+      const nameLower = file.name.toLowerCase()
+      if (nameLower.endsWith('.heic') || nameLower.endsWith('.heif')) {
+        try {
+          const convertedBlob = await heic2any({ blob: file, toType: 'image/jpeg' })
+          // heic2any may return Blob or Blob[]
+          const jpegBlob = Array.isArray(convertedBlob) ? convertedBlob[0] : convertedBlob
+          processedFile = new File([jpegBlob], file.name.replace(/\.(heic|heif)$/i, '.jpg'), { type: 'image/jpeg' })
+        } catch (convErr) {
+          console.warn('HEIC conversion failed for', file.name, convErr)
+          errors++
+          completed++
+          continue
+        }
+      }
+
       // Compute perceptual hash
-      const hash = await computeHash(file)
+      const hash = await computeHash(processedFile)
 
       // Check for duplicates
       const dupCheck = isDuplicate(hash, existingHashes, duplicateThreshold.value)
@@ -202,11 +220,11 @@ async function onFileChange(event) {
       }
 
       // Generate unique key in Qiniu
-      const ext = file.name.split('.').pop() || 'jpg'
+      const ext = processedFile.name.split('.').pop() || 'jpg'
       const qiniuKey = `${config.photoPrefix}${generateId()}.${ext}`
 
-      // Upload to Qiniu
-      const result = await uploadFile(file, qiniuKey, (percent) => {
+      // Upload to Qiniu (use the converted file for HEIC)
+      const result = await uploadFile(processedFile, qiniuKey, (percent) => {
         // Global progress
         const overallPercent = Math.floor(((completed + (percent / 100)) / total) * 100)
         uploadProgress.value = overallPercent
@@ -219,7 +237,7 @@ async function onFileChange(event) {
         qiniuKey: result.key,
         qiniuUrl,
         hash,
-        filename: file.name,
+        filename: file.name, // store original filename
         groupIndex: -1
       })
 
