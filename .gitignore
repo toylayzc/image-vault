@@ -22,3 +22,7 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Qiniu credentials (DO NOT COMMIT)
+qiniu-config.json
+src/token.txt

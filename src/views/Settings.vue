@@ -19,22 +19,24 @@
       </van-cell>
     </van-cell-group>
 
-    <van-cell-group title="数据管理">
-      <van-cell title="图片总数" :value="`${imageCount} 张`" />
-      <van-cell title="占用空间" :value="storageSize" />
-      <van-cell title="清除所有图片" is-link @click="onClearAll" />
+    <van-cell-group title="存储管理 (七牛云)">
+      <van-cell title="图片总数" :value="`${stats.total} 张`" />
+      <van-cell title="已下载" :value="`${stats.downloaded} 张`" />
+      <van-cell title="自动清理" :value="`${retainDays} 天后`" :label="`图片下载后 ${retainDays} 天自动从云端删除`" />
+    </van-cell-group>
+
+    <van-cell-group title="清理">
+      <van-cell title="立即清理过期文件" is-link @click="onManualCleanup" />
+      <van-cell title="清除所有图片数据" is-link @click="onClearAll" />
     </van-cell-group>
 
     <van-cell-group title="关于">
-      <van-cell title="版本" value="1.0.0" />
-      <van-cell title="说明" label="纯浏览器端图片管理工具，所有图片仅存储在本地浏览器中，不会上传到任何服务器。" />
+      <van-cell title="版本" value="1.1.0" />
+      <van-cell title="说明" label="图片存储在七牛云 Kodo，元数据存储在浏览器本地。分享链接 3 天后自动清理。" />
     </van-cell-group>
 
-    <!-- Clear confirm dialog -->
     <van-dialog v-model:show="showClearConfirm" title="确认清除" show-cancel-button @confirm="doClearAll">
-      <p style="padding: 16px; margin: 0; text-align: center;">
-        确定要清除所有图片数据吗？此操作不可恢复！
-      </p>
+      <p style="padding:16px;margin:0;text-align:center;">确定要清除所有图片数据吗？此操作不可恢复！<br/>云端图片也会被删除。</p>
     </van-dialog>
   </div>
 </template>
@@ -42,13 +44,15 @@
 <script setup>
 import { ref, onMounted, computed, watch } from 'vue'
 import { showToast } from 'vant'
-import { getAllImages, clearAllImages, getSetting, setSetting } from '../utils/db.js'
+import { getAllImages, clearAllImages, getSetting, setSetting, getStorageStats, getExpiredDownloadedImages, getExpiredShares, deleteShare, deleteImage } from '../utils/db.js'
+import { batchDeleteFiles } from '../api/qiniu.js'
+import config from '../config.js'
 
 const threshold = ref(10)
 const defaultGroupSize = ref(6)
-const imageCount = ref(0)
-const storageSize = ref('计算中...')
+const retainDays = ref(config.retainDays || 3)
 const showClearConfirm = ref(false)
+const stats = ref({ total: 0, downloaded: 0, notDownloaded: 0 })
 
 const thresholdLabel = computed(() => {
   if (threshold.value <= 5) return '非常严格 - 几乎相同的图片才会判重'
@@ -70,40 +74,60 @@ async function loadSettings() {
 }
 
 async function loadStats() {
-  const images = await getAllImages()
-  imageCount.value = images.length
+  stats.value = await getStorageStats()
+}
 
-  let totalBytes = 0
-  for (const img of images) {
-    totalBytes += img.blob.size
+watch(threshold, async (val) => { await setSetting('threshold', val) })
+watch(defaultGroupSize, async (val) => { await setSetting('defaultGroupSize', val) })
+
+async function onManualCleanup() {
+  showToast('正在清理过期文件...')
+  try {
+    // Clean expired images
+    const expiredImgs = await getExpiredDownloadedImages(retainDays.value)
+    if (expiredImgs.length > 0) {
+      const keys = expiredImgs.map(img => img.qiniuKey)
+      await batchDeleteFiles(keys)
+      for (const img of expiredImgs) {
+        await deleteImage(img.id)
+      }
+    }
+
+    // Clean expired shares
+    const expiredShares = await getExpiredShares(retainDays.value)
+    for (const share of expiredShares) {
+      try {
+        await batchDeleteFiles([`${config.sharePrefix}${share.shareId}.json`])
+      } catch {}
+      await deleteShare(share.shareId)
+    }
+
+    showToast(`已清理 ${expiredImgs.length} 张图片, ${expiredShares.length} 个分享`)
+    await loadStats()
+  } catch (e) {
+    console.error('Cleanup error:', e)
+    showToast('清理失败')
   }
-  storageSize.value = formatBytes(totalBytes)
 }
-
-function formatBytes(bytes) {
-  if (bytes === 0) return '0 B'
-  const k = 1024
-  const sizes = ['B', 'KB', 'MB', 'GB']
-  const i = Math.floor(Math.log(bytes) / Math.log(k))
-  return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i]
-}
-
-// Watch changes and save
-watch(threshold, async (val) => {
-  await setSetting('threshold', val)
-})
-watch(defaultGroupSize, async (val) => {
-  await setSetting('defaultGroupSize', val)
-})
 
 function onClearAll() {
   showClearConfirm.value = true
 }
 
 async function doClearAll() {
+  showToast('正在清空...')
+  // Get all keys first
+  const all = await getAllImages()
+  const keys = all.map(img => img.qiniuKey).filter(Boolean)
+  if (keys.length > 0) {
+    try {
+      await batchDeleteFiles(keys)
+    } catch (e) {
+      console.warn('Batch delete error:', e)
+    }
+  }
   await clearAllImages()
-  imageCount.value = 0
-  storageSize.value = '0 B'
+  stats.value = { total: 0, downloaded: 0, notDownloaded: 0 }
   showToast('已清除所有图片')
 }
 </script>

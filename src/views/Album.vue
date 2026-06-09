@@ -6,6 +6,22 @@
       </template>
     </van-nav-bar>
 
+    <!-- Result banner -->
+    <van-notice-bar
+      v-if="resultMessage"
+      :text="resultMessage"
+      color="#fff"
+      background="#1989fa"
+      mode="closeable"
+      @close="resultMessage = ''"
+    />
+
+    <!-- Upload progress bar -->
+    <div v-if="uploadProgress > 0 && uploadProgress < 100" class="progress-bar">
+      <div class="progress-label">上传中 {{ uploadProgress }}%</div>
+      <van-progress :percentage="uploadProgress" :stroke-width="6" color="#1989fa" />
+    </div>
+
     <!-- Image count bar -->
     <div class="count-bar" v-if="images.length > 0">
       <span>共 {{ images.length }} 张图片</span>
@@ -15,7 +31,7 @@
     </div>
 
     <!-- Empty state -->
-    <van-empty v-if="images.length === 0" description="还没有图片，点击右上角 + 上传">
+    <van-empty v-if="images.length === 0 && !loading" description="还没有图片，点击右上角 + 上传">
       <template #image>
         <van-icon name="photo-o" size="80" color="#c8c9cc" />
       </template>
@@ -29,7 +45,7 @@
         :key="img.id"
         @click="!showDeleteMode && previewImage(img)"
       >
-        <img :src="img.thumbnailUrl" :alt="img.filename" />
+        <img :src="img.qiniuUrl" :alt="img.filename" />
         <!-- Delete mode overlay -->
         <div v-if="showDeleteMode" class="delete-overlay" @click.stop="confirmDelete(img)">
           <van-icon name="delete" size="28" color="#ee0a24" />
@@ -38,11 +54,12 @@
         <div class="image-badge" v-if="img.groupIndex >= 0">
           {{ img.groupIndex + 1 }}
         </div>
+        <!-- Downloaded badge -->
+        <div class="downloaded-badge" v-if="img.downloaded">
+          <van-icon name="down" size="12" />
+        </div>
       </div>
     </div>
-
-    <!-- Result banner -->
-    <van-notice-bar v-if="resultMessage" :text="resultMessage" color="#fff" background="#1989fa" mode="closeable" @close="resultMessage = ''" />
 
     <!-- Loading -->
     <van-loading v-if="loading" class="loading-center" size="24px">处理中...</van-loading>
@@ -85,18 +102,18 @@
       show-cancel-button
       @confirm="doDeleteImage"
     >
-      <p style="padding: 16px; margin: 0; text-align: center;">
-        确定要删除这张图片吗？
-      </p>
+      <p style="padding: 16px; margin: 0; text-align: center;">确定要删除这张图片吗？</p>
     </van-dialog>
   </div>
 </template>
 
 <script setup>
-import { ref, onMounted, onUnmounted } from 'vue'
+import { ref, onMounted } from 'vue'
 import { showToast } from 'vant'
-import { getAllImages, addImage, getAllHashes, deleteImage, getSetting } from '../utils/db.js'
+import { getAllImages, addImageMeta, getAllHashes, deleteImage, getSetting } from '../utils/db.js'
 import { computeHash, isDuplicate } from '../utils/hash.js'
+import { uploadFile, getImageUrl, getThumbnailUrl, generateId, batchDeleteFiles } from '../api/qiniu.js'
+import config from '../config.js'
 
 const images = ref([])
 const loading = ref(false)
@@ -110,6 +127,7 @@ const previewImages = ref([])
 const previewStart = ref(0)
 const duplicateThreshold = ref(10)
 const resultMessage = ref('')
+const uploadProgress = ref(0)
 
 const uploadActions = [
   { name: '从相册选择照片', key: 'album' },
@@ -117,33 +135,26 @@ const uploadActions = [
 ]
 
 onMounted(async () => {
-  // Load dedup threshold from settings
   const t = await getSetting('threshold')
   if (t !== null) duplicateThreshold.value = t
-  const g = await getSetting('defaultGroupSize')
-  if (g !== null) {
-    // Store in session for Groups page to use
-    sessionStorage.setItem('defaultGroupSize', g)
-  }
   await loadImages()
 })
 
 async function loadImages() {
   loading.value = true
   try {
-    // Revoke old object URLs to prevent memory leaks
-    for (const img of images.value) {
-      if (img.thumbnailUrl) URL.revokeObjectURL(img.thumbnailUrl)
-    }
     const all = await getAllImages()
-    images.value = all.map((img) => ({
+    // Convert qiniuUrl back from stored value
+    images.value = all.map(img => ({
       ...img,
-      thumbnailUrl: URL.createObjectURL(img.blob)
+      thumbnailUrl: getThumbnailUrl(img.qiniuKey),
+      qiniuUrl: img.qiniuUrl
     }))
   } catch (e) {
     console.error('Failed to load images:', e)
     showToast('加载图片失败')
     resultMessage.value = '加载图片失败'
+    setTimeout(() => { resultMessage.value = '' }, 4000)
   } finally {
     loading.value = false
   }
@@ -157,11 +168,8 @@ function onUploadSelect(action) {
     input.accept = 'image/*'
     input.capture = 'environment'
     input.multiple = true
-    input.style.display = 'none'
     input.addEventListener('change', (e) => onFileChange(e))
-    document.body.appendChild(input)
     input.click()
-    document.body.removeChild(input)
   } else {
     fileInput.value.click()
   }
@@ -172,13 +180,13 @@ async function onFileChange(event) {
   if (!files || files.length === 0) return
 
   loading.value = true
-
-  // Get existing hashes
   const existingHashes = await getAllHashes()
 
   let added = 0
   let duplicate = 0
   let errors = 0
+  let total = files.length
+  let completed = 0
 
   for (const file of files) {
     try {
@@ -189,35 +197,53 @@ async function onFileChange(event) {
       const dupCheck = isDuplicate(hash, existingHashes, duplicateThreshold.value)
       if (dupCheck.isDuplicate) {
         duplicate++
+        completed++
         continue
       }
 
-      // Convert file to blob and store
-      const blob = await file.arrayBuffer().then(buf => new Blob([buf], { type: file.type }))
+      // Generate unique key in Qiniu
+      const ext = file.name.split('.').pop() || 'jpg'
+      const qiniuKey = `${config.photoPrefix}${generateId()}.${ext}`
 
-      await addImage(blob, hash, file.name)
+      // Upload to Qiniu
+      const result = await uploadFile(file, qiniuKey, (percent) => {
+        // Global progress
+        const overallPercent = Math.floor(((completed + (percent / 100)) / total) * 100)
+        uploadProgress.value = overallPercent
+      })
+
+      const qiniuUrl = getImageUrl(result.key)
+
+      // Store metadata in IndexedDB
+      await addImageMeta({
+        qiniuKey: result.key,
+        qiniuUrl,
+        hash,
+        filename: file.name,
+        groupIndex: -1
+      })
+
       existingHashes.push(hash)
       added++
+      completed++
     } catch (e) {
       console.error('Error processing file:', file.name, e)
       errors++
+      completed++
     }
   }
 
+  uploadProgress.value = 0
   loading.value = false
-  event.target.value = '' // reset input
+  event.target.value = ''
 
   const parts = []
   if (added > 0) parts.push(`成功上传 ${added} 张`)
   if (duplicate > 0) parts.push(`跳过 ${duplicate} 张重复`)
   if (errors > 0) parts.push(`${errors} 张失败`)
   const msg = parts.join('，') || '上传完成'
-  
-  // Show result both as toast and as visible banner
   resultMessage.value = msg
   showToast({ message: msg, duration: 2500 })
-  
-  // Auto-clear banner after 4 seconds
   setTimeout(() => { resultMessage.value = '' }, 4000)
 
   await loadImages()
@@ -230,6 +256,13 @@ function confirmDelete(img) {
 
 async function doDeleteImage() {
   if (!deleteTarget.value) return
+  // Delete from Qiniu
+  try {
+    await batchDeleteFiles([deleteTarget.value.qiniuKey])
+  } catch (e) {
+    console.warn('Qiniu delete error:', e)
+  }
+  // Delete metadata
   await deleteImage(deleteTarget.value.id)
   showDeleteConfirm.value = false
   deleteTarget.value = null
@@ -240,17 +273,10 @@ async function doDeleteImage() {
 
 function previewImage(img) {
   const idx = images.value.findIndex(i => i.id === img.id)
-  previewImages.value = images.value.map(i => i.thumbnailUrl)
+  previewImages.value = images.value.map(i => i.qiniuUrl || i.thumbnailUrl)
   previewStart.value = idx
   showPreview.value = true
 }
-
-// Revoke URLs on unmount
-onUnmounted(() => {
-  for (const img of images.value) {
-    if (img.thumbnailUrl) URL.revokeObjectURL(img.thumbnailUrl)
-  }
-})
 </script>
 
 <style scoped>
@@ -258,6 +284,17 @@ onUnmounted(() => {
   min-height: 100%;
   background: #f7f8fa;
   padding-bottom: 60px;
+}
+
+.progress-bar {
+  padding: 8px 12px;
+  background: #fff;
+}
+
+.progress-label {
+  font-size: 12px;
+  color: #666;
+  margin-bottom: 4px;
 }
 
 .count-bar {
@@ -282,7 +319,7 @@ onUnmounted(() => {
   position: relative;
   aspect-ratio: 1;
   overflow: hidden;
-  background: #fff;
+  background: #e8e8e8;
 }
 
 .image-item img {
@@ -306,6 +343,20 @@ onUnmounted(() => {
   align-items: center;
   justify-content: center;
   padding: 0 4px;
+}
+
+.downloaded-badge {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  background: rgba(7, 193, 96, 0.85);
+  color: #fff;
+  width: 18px;
+  height: 18px;
+  border-radius: 9px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .delete-overlay {
