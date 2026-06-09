@@ -26,15 +26,17 @@ export async function uploadFile(file, key, onProgress) {
   const token = await fetchUploadToken()
 
   return new Promise((resolve, reject) => {
-    const observable = qiniu.upload(file, key, token, {
+    const putExtra = {
       fname: file.name,
-      mimeType: file.type,
-      useCdnDomain: true
-    }, {
-      // qiniu-js v3.x uses next/error/complete
-    })
+      mimeType: file.type
+    }
+    const uploadConfig = {
+      useCdnDomain: true,
+      region: qiniu.region.z0  // 华东-浙江，避免自动检测失败
+    }
 
-    // qiniu-js v3 subscription
+    const observable = qiniu.upload(file, key, token, putExtra, uploadConfig)
+
     const observer = {
       next(res) {
         const percent = Math.floor((res.total.loaded / res.total.size) * 100)
@@ -72,8 +74,6 @@ export function getThumbnailUrl(key, width = 200, height = 200) {
 
 /**
  * 上传分享数据（分组信息存为 JSON 文件）
- * @param {string} shareId
- * @param {object} data - 分享数据 { groupName, images: [{key, filename}], createdAt }
  */
 export async function uploadShareData(shareId, data) {
   const jsonStr = JSON.stringify(data)
@@ -84,8 +84,6 @@ export async function uploadShareData(shareId, data) {
 
 /**
  * 获取分享数据
- * @param {string} shareId
- * @returns {Promise<object|null>}
  */
 export async function fetchShareData(shareId) {
   try {
@@ -100,7 +98,6 @@ export async function fetchShareData(shareId) {
 
 /**
  * 批量删除七牛云文件
- * @param {string[]} keys
  */
 export async function batchDeleteFiles(keys) {
   if (!keys || keys.length === 0) return
