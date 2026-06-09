@@ -14,8 +14,8 @@ export default defineConfig({
       resolvers: [VantResolver()]
     })
   ],
-  // 本地开发用 '/' ; Gitee Pages 部署时改为 '/仓库名/'
-  base: process.env.GITEE_DEPLOY ? '/image-vault/' : '/',
+  // GitHub Pages: https://toylayzc.github.io/image-vault/
+  base: process.env.GH_DEPLOY ? '/image-vault/' : '/',
   server: {
     host: '0.0.0.0',
     port: 5173
