@@ -41,6 +41,9 @@
       </div>
     </div>
 
+    <!-- Result banner -->
+    <van-notice-bar v-if="resultMessage" :text="resultMessage" color="#fff" background="#1989fa" mode="closeable" @close="resultMessage = ''" />
+
     <!-- Loading -->
     <van-loading v-if="loading" class="loading-center" size="24px">处理中...</van-loading>
 
@@ -106,6 +109,7 @@ const showPreview = ref(false)
 const previewImages = ref([])
 const previewStart = ref(0)
 const duplicateThreshold = ref(10)
+const resultMessage = ref('')
 
 const uploadActions = [
   { name: '从相册选择照片', key: 'album' },
@@ -139,6 +143,7 @@ async function loadImages() {
   } catch (e) {
     console.error('Failed to load images:', e)
     showToast('加载图片失败')
+    resultMessage.value = '加载图片失败'
   } finally {
     loading.value = false
   }
@@ -206,8 +211,14 @@ async function onFileChange(event) {
   if (added > 0) parts.push(`成功上传 ${added} 张`)
   if (duplicate > 0) parts.push(`跳过 ${duplicate} 张重复`)
   if (errors > 0) parts.push(`${errors} 张失败`)
-  const msg = parts.join('，')
-  showToast(msg || '上传完成')
+  const msg = parts.join('，') || '上传完成'
+  
+  // Show result both as toast and as visible banner
+  resultMessage.value = msg
+  showToast({ message: msg, duration: 2500 })
+  
+  // Auto-clear banner after 4 seconds
+  setTimeout(() => { resultMessage.value = '' }, 4000)
 
   await loadImages()
 }
