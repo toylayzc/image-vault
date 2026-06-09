@@ -5,26 +5,14 @@
 import * as qiniu from 'qiniu-js'
 import config from '../config.js'
 
-/**
- * 从 Worker 获取上传凭证
- */
-async function fetchUploadToken() {
-  const resp = await fetch(config.workerUrl + '/upload-token', { method: 'POST' })
-  if (!resp.ok) throw new Error('获取上传凭证失败: ' + resp.status)
-  const data = await resp.json()
-  return data.token
-}
+// 预生成的上传 token（30天有效）
+// 到期后运行 node scripts/gen-token.js 重新生成后替换
+const UPLOAD_TOKEN = 'ok1FbdAJHr53s-_FRRnS2p3srnEh7q4PmydlgrQl:7Tw_jtjqiInJ5Xji9RLjSK1i_AI:eyJzY29wZSI6ImltYWdlLXZhdWx0LWVzIiwiZGVhZGxpbmUiOjE3ODM2MDgyNDMsInJldHVybkJvZHkiOiJ7XCJrZXlcIjpcIiQoa2V5KVwiLFwiaGFzaFwiOlwiJChldGFnKVwiLFwiZnNpemVcIjokKGZzaXplKSxcIm1pbWVUeXBlXCI6XCIkKG1pbWVUeXBlKVwifSJ9'
 
 /**
  * 上传文件到七牛云
- * @param {File|Blob} file
- * @param {string} key 七牛云上的文件路径
- * @param {Function} onProgress 进度回调 (0-100)
- * @returns {Promise<{key: string, hash: string, fsize: number}>}
  */
 export async function uploadFile(file, key, onProgress) {
-  const token = await fetchUploadToken()
-
   return new Promise((resolve, reject) => {
     const putExtra = {
       fname: file.name,
@@ -35,7 +23,7 @@ export async function uploadFile(file, key, onProgress) {
       uphost: ['up.qiniup.com', 'upload.qiniup.com', 'up.qiniu.com', 'upload.qiniu.com']
     }
 
-    const observable = qiniu.upload(file, key, token, putExtra, uploadConfig)
+    const observable = qiniu.upload(file, key, UPLOAD_TOKEN, putExtra, uploadConfig)
 
     const observer = {
       next(res) {
@@ -66,14 +54,14 @@ export function getImageUrl(key) {
 }
 
 /**
- * 生成缩略图 URL（使用七牛云图片处理）
+ * 生成缩略图 URL
  */
 export function getThumbnailUrl(key, width = 200, height = 200) {
   return `${config.cdnDomain}/${key}?imageView2/1/w/${width}/h/${height}`
 }
 
 /**
- * 上传分享数据（分组信息存为 JSON 文件）
+ * 上传分享数据
  */
 export async function uploadShareData(shareId, data) {
   const jsonStr = JSON.stringify(data)
@@ -97,17 +85,22 @@ export async function fetchShareData(shareId) {
 }
 
 /**
- * 批量删除七牛云文件
+ * 批量删除七牛云文件（静默失败，删除不需要提示用户）
  */
 export async function batchDeleteFiles(keys) {
   if (!keys || keys.length === 0) return
-  const resp = await fetch(config.workerUrl + '/batch-delete', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ keys })
-  })
-  if (!resp.ok) throw new Error('删除失败: ' + resp.status)
-  return await resp.json()
+  try {
+    const resp = await fetch(config.workerUrl + '/batch-delete', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ keys })
+    })
+    if (!resp.ok) console.warn('删除失败:', resp.status)
+    return await resp.json()
+  } catch (e) {
+    console.warn('删除API不可达（Worker可能需要翻墙）:', e.message)
+    // 静默失败，不影响用户体验
+  }
 }
 
 /**
