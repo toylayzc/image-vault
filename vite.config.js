@@ -15,7 +15,7 @@ export default defineConfig({
     })
   ],
   // 本地开发用 '/' ; Gitee Pages 部署时改为 '/仓库名/'
-  base: process.env.GITEE_DEPLOY ? '/your-repo-name/' : '/',
+  base: process.env.GITEE_DEPLOY ? '/image-vault/' : '/',
   server: {
     host: '0.0.0.0',
     port: 5173
