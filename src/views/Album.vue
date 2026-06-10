@@ -113,7 +113,6 @@ import { showToast } from 'vant'
 import { getAllImages, addImageMeta, getAllHashes, getAllFilenames, deleteImage, getSetting } from '../utils/db.js'
 import { computeHash, isDuplicate } from '../utils/hash.js'
 import { uploadFile, getImageUrl, getThumbnailUrl, batchDeleteFiles } from '../api/qiniu.js'
-import heic2any from 'heic2any'
 
 const images = ref([])
 const loading = ref(false)
@@ -187,7 +186,6 @@ async function onFileChange(event) {
   let duplicate = 0
   let nameDuplicate = 0
   let errors = 0
-  let heicFallback = 0
   let total = files.length
   let completed = 0
 
@@ -200,53 +198,40 @@ async function onFileChange(event) {
         continue
       }
 
-      // Convert HEIC/HEIF to JPEG first
-      let processedFile = file
-      let isHeicConverted = false
-      let isLivp = false
       const nameLower = file.name.toLowerCase()
-      if (nameLower.endsWith('.heic') || nameLower.endsWith('.heif')) {
-        try {
-          const convertedBlob = await heic2any({ blob: file, toType: 'image/jpeg' })
-          // heic2any may return Blob or Blob[]
-          const jpegBlob = Array.isArray(convertedBlob) ? convertedBlob[0] : convertedBlob
-          processedFile = new File([jpegBlob], file.name.replace(/\.(heic|heif)$/i, '.jpg'), { type: 'image/jpeg' })
-          isHeicConverted = true
-        } catch (convErr) {
-          console.warn('HEIC conversion failed for', file.name, ', uploading original', convErr)
-          processedFile = file
-          heicFallback++
-        }
-      }
+      const isLivp = nameLower.endsWith('.livp')
+      const isHeic = nameLower.endsWith('.heic') || nameLower.endsWith('.heif')
 
-      // Apple Live Photo (.livp) — zip package, can't compute dHash
-      if (nameLower.endsWith('.livp')) {
-        isLivp = true
-      }
-
-      // Compute perceptual hash (skip for .livp)
-      let hash = ''
-      if (isLivp) {
-        hash = 'livp_' + file.name
-      } else {
-        hash = await computeHash(processedFile)
-
-        // Check for content duplicates
-        const dupCheck = isDuplicate(hash, existingHashes, duplicateThreshold.value)
-        if (dupCheck.isDuplicate) {
-          duplicate++
-          completed++
-          continue
-        }
-      }
-
-      // Upload to server (use the converted file for HEIC)
-      const result = await uploadFile(processedFile, (percent) => {
+      // Upload original file to server (server handles HEIC→JPEG, LIVP→extract→JPEG)
+      const result = await uploadFile(file, (percent) => {
         const overallPercent = Math.floor(((completed + (percent / 100)) / total) * 100)
         uploadProgress.value = overallPercent
       })
 
       const imgUrl = getImageUrl(result.key)
+
+      // Compute hash for dedup (skip for .livp, may fail for .heic on some browsers)
+      let hash = ''
+      if (isLivp) {
+        hash = 'livp_' + file.name
+      } else {
+        try {
+          hash = await computeHash(file)
+
+          // Check for content duplicates
+          const dupCheck = isDuplicate(hash, existingHashes, duplicateThreshold.value)
+          if (dupCheck.isDuplicate) {
+            // Duplicate found — remove the uploaded file from server
+            try { await batchDeleteFiles([result.key]) } catch {}
+            duplicate++
+            completed++
+            continue
+          }
+        } catch (hashErr) {
+          console.warn('Hash computation failed for', file.name, ', skipping dedup')
+          hash = 'skip_' + file.name
+        }
+      }
 
       await addImageMeta({
         qiniuKey: result.key,
@@ -275,7 +260,6 @@ async function onFileChange(event) {
   if (added > 0) parts.push(`成功上传 ${added} 张`)
   if (nameDuplicate > 0) parts.push(`跳过 ${nameDuplicate} 张同名`)
   if (duplicate > 0) parts.push(`跳过 ${duplicate} 张重复`)
-  if (heicFallback > 0) parts.push(`${heicFallback} 张 HEIC 转码失败已传原格式`)
   if (errors > 0) parts.push(`${errors} 张失败`)
   const msg = parts.join('，') || '上传完成'
   resultMessage.value = msg

@@ -4,6 +4,20 @@ const multer = require("multer");
 const path = require("path");
 const fs = require("fs");
 const crypto = require("crypto");
+const sharp = require("sharp");
+const AdmZip = require("adm-zip");
+const heicDecode = require("heic-decode");
+
+/**
+ * Convert a HEIC/HEIF file buffer to JPEG using heic-decode + sharp
+ */
+async function convertHeicToJpeg(inputPath, outputPath) {
+  const buf = fs.readFileSync(inputPath);
+  const result = await heicDecode({ buffer: buf });
+  await sharp(result.data, {
+    raw: { width: result.width, height: result.height, channels: 4 }
+  }).jpeg({ quality: 90 }).toFile(outputPath);
+}
 
 const app = express();
 const PORT = 3000;
@@ -28,7 +42,7 @@ const storage = multer.diskStorage({
 });
 const upload = multer({ 
   storage,
-  limits: { fileSize: 50 * 1024 * 1024 } // 50MB 限制
+  limits: { fileSize: 100 * 1024 * 1024 } // 100MB 限制（livp 可能较大）
 });
 
 app.use(cors());
@@ -36,10 +50,103 @@ app.use(express.json({ limit: "10mb" }));
 
 app.get("/", (req, res) => res.json({ status: "ok", message: "API running" }));
 
-// 上传图片
-app.post("/upload", upload.single("file"), (req, res) => {
+/**
+ * 处理上传文件：
+ * - .heic/.heif → 用 sharp 转成 JPEG，保留原文件
+ * - .livp → 解压 ZIP 取出里面的 HEIC，转成 JPEG，保留原 livp
+ * - 其他格式 → 原样保存
+ */
+app.post("/upload", upload.single("file"), async (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ error: "no file" });
+
+    const filePath = req.file.path;
+    const fileExt = path.extname(req.file.originalname).toLowerCase();
+    const baseName = path.basename(filePath, path.extname(filePath));
+
+    // 处理 HEIC/HEIF → 转 JPEG
+    if (fileExt === ".heic" || fileExt === ".heif") {
+      try {
+        const jpegPath = path.join(UPLOAD_DIR, baseName + ".jpg");
+        await convertHeicToJpeg(filePath, jpegPath);
+
+        // 返回 JPEG 的 key
+        res.json({
+          key: baseName + ".jpg",
+          url: "/uploads/" + baseName + ".jpg",
+          fsize: fs.statSync(jpegPath).size,
+          originalname: req.file.originalname
+        });
+      } catch (convErr) {
+        console.error("HEIC convert failed:", convErr);
+        // 转码失败则返回原文件
+        res.json({
+          key: req.file.filename,
+          url: "/uploads/" + req.file.filename,
+          fsize: req.file.size,
+          originalname: req.file.originalname
+        });
+      }
+      return;
+    }
+
+    // 处理 LIVP (Apple Live Photo) → 解压 → 提取 HEIC → 转 JPEG
+    if (fileExt === ".livp") {
+      try {
+        const zip = new AdmZip(filePath);
+        const zipEntries = zip.getEntries();
+
+        // 找到第一个 HEIC/HEIF 文件
+        let photoEntry = null;
+        for (const entry of zipEntries) {
+          const entryName = entry.entryName.toLowerCase();
+          if (entryName.endsWith(".heic") || entryName.endsWith(".heif")) {
+            photoEntry = entry;
+            break;
+          }
+        }
+
+        if (photoEntry) {
+          // 提取 HEIC 到临时文件
+          const heicTempPath = path.join(UPLOAD_DIR, baseName + "_temp.heic");
+          fs.writeFileSync(heicTempPath, photoEntry.getData());
+
+          // 用 heicDecode + sharp 转成 JPEG
+          const jpegPath = path.join(UPLOAD_DIR, baseName + ".jpg");
+          await convertHeicToJpeg(heicTempPath, jpegPath);
+
+          // 删除临时 HEIC 文件
+          try { fs.unlinkSync(heicTempPath); } catch {}
+
+          res.json({
+            key: baseName + ".jpg",
+            url: "/uploads/" + baseName + ".jpg",
+            fsize: fs.statSync(jpegPath).size,
+            originalname: req.file.originalname
+          });
+        } else {
+          // livp 中没有找到 HEIC，返回原文件
+          res.json({
+            key: req.file.filename,
+            url: "/uploads/" + req.file.filename,
+            fsize: req.file.size,
+            originalname: req.file.originalname
+          });
+        }
+      } catch (livpErr) {
+        console.error("LIVP extract failed:", livpErr);
+        // 解压失败则返回原文件
+        res.json({
+          key: req.file.filename,
+          url: "/uploads/" + req.file.filename,
+          fsize: req.file.size,
+          originalname: req.file.originalname
+        });
+      }
+      return;
+    }
+
+    // 其他格式（JPG, JPEG, PNG 等）原样返回
     res.json({
       key: req.file.filename,
       url: "/uploads/" + req.file.filename,
@@ -50,21 +157,69 @@ app.post("/upload", upload.single("file"), (req, res) => {
 });
 
 // 批量上传（兼容多选）
-app.post("/uploads", upload.array("files", 200), (req, res) => {
+app.post("/uploads", upload.array("files", 200), async (req, res) => {
   try {
     if (!req.files || req.files.length === 0)
       return res.status(400).json({ error: "no files" });
-    const results = req.files.map(f => ({
-      key: f.filename,
-      url: "/uploads/" + f.filename,
-      fsize: f.size,
-      originalname: f.originalname
-    }));
+
+    const results = [];
+    for (const f of req.files) {
+      const fileExt = path.extname(f.originalname).toLowerCase();
+      const baseName = path.basename(f.filename, path.extname(f.filename));
+
+      let key = f.filename;
+      let url = "/uploads/" + f.filename;
+      let fsize = f.size;
+
+      // HEIC 转 JPEG
+      if (fileExt === ".heic" || fileExt === ".heif") {
+        try {
+          const jpegPath = path.join(UPLOAD_DIR, baseName + ".jpg");
+          await convertHeicToJpeg(f.path, jpegPath);
+          key = baseName + ".jpg";
+          url = "/uploads/" + baseName + ".jpg";
+          fsize = fs.statSync(jpegPath).size;
+        } catch (convErr) {
+          console.error("HEIC batch convert failed:", convErr);
+        }
+      }
+
+      // LIVP 解压提取
+      if (fileExt === ".livp") {
+        try {
+          const zip = new AdmZip(f.path);
+          const zipEntries = zip.getEntries();
+          let photoEntry = null;
+          for (const entry of zipEntries) {
+            const entryName = entry.entryName.toLowerCase();
+            if (entryName.endsWith(".heic") || entryName.endsWith(".heif")) {
+              photoEntry = entry;
+              break;
+            }
+          }
+          if (photoEntry) {
+            const heicTempPath = path.join(UPLOAD_DIR, baseName + "_temp.heic");
+            fs.writeFileSync(heicTempPath, photoEntry.getData());
+            const jpegPath = path.join(UPLOAD_DIR, baseName + ".jpg");
+            await convertHeicToJpeg(heicTempPath, jpegPath);
+            try { fs.unlinkSync(heicTempPath); } catch {}
+            key = baseName + ".jpg";
+            url = "/uploads/" + baseName + ".jpg";
+            fsize = fs.statSync(jpegPath).size;
+          }
+        } catch (livpErr) {
+          console.error("LIVP batch extract failed:", livpErr);
+        }
+      }
+
+      results.push({ key, url, fsize, originalname: f.originalname });
+    }
+
     res.json({ items: results });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// 获取所有文件列表（给前端做去重和展示用）
+// 获取所有文件列表
 app.get("/files", (req, res) => {
   fs.readdir(UPLOAD_DIR, (err, files) => {
     if (err) return res.status(500).json({ error: err.message });
@@ -115,7 +270,6 @@ app.post("/batch-delete", (req, res) => {
 
 // ====== 分享数据 API ======
 
-// 保存分享数据（使用自定义文件名）
 app.post("/save-share-data", (req, res) => {
   try {
     const { shareId, groups } = req.body;
@@ -123,17 +277,12 @@ app.post("/save-share-data", (req, res) => {
       return res.status(400).json({ error: "shareId and groups required" });
     }
     const filePath = path.join(SHARES_DIR, shareId + ".json");
-    const data = {
-      shareId,
-      groups,
-      createdAt: Date.now()
-    };
+    const data = { shareId, groups, createdAt: Date.now() };
     fs.writeFileSync(filePath, JSON.stringify(data), "utf-8");
     res.json({ success: true, shareId, url: "/share-data/" + shareId });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// 获取分享数据
 app.get("/share-data/:shareId", (req, res) => {
   try {
     const filePath = path.join(SHARES_DIR, req.params.shareId + ".json");
@@ -145,7 +294,6 @@ app.get("/share-data/:shareId", (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// 删除分享数据
 app.delete("/share-data/:shareId", (req, res) => {
   try {
     const filePath = path.join(SHARES_DIR, req.params.shareId + ".json");
@@ -158,7 +306,6 @@ app.delete("/share-data/:shareId", (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// 清理过期分享（由前端定时调用或手动触发）
 app.post("/cleanup-expired-shares", (req, res) => {
   try {
     const { retainDays = 3 } = req.body;
