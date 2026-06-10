@@ -18,7 +18,7 @@
 
     <!-- Upload progress bar -->
     <div v-if="uploadProgress > 0 && uploadProgress < 100" class="progress-bar">
-      <div class="progress-label">上传中 {{ uploadProgress }}%</div>
+      <div class="progress-label">{{ processingStatus || '上传中' }} {{ uploadProgress }}%</div>
       <van-progress :percentage="uploadProgress" :stroke-width="6" color="#1989fa" />
     </div>
 
@@ -113,6 +113,10 @@ import { showToast } from 'vant'
 import { getAllImages, addImageMeta, getAllHashes, getAllFilenames, deleteImage, getSetting } from '../utils/db.js'
 import { computeHash, isDuplicate } from '../utils/hash.js'
 import { uploadFile, getImageUrl, getThumbnailUrl, batchDeleteFiles } from '../api/qiniu.js'
+import heic2any from 'heic2any'
+import JSZip from 'jszip'
+
+const processingStatus = ref('') // 显示当前处理状态
 
 const images = ref([])
 const loading = ref(false)
@@ -190,6 +194,8 @@ async function onFileChange(event) {
   let completed = 0
 
   for (const file of files) {
+    let uploadFileObj = file
+    let isConverted = false
     try {
       // Check filename duplicate first (cheaper than hash)
       if (existingFilenames.includes(file.name)) {
@@ -202,36 +208,77 @@ async function onFileChange(event) {
       const isLivp = nameLower.endsWith('.livp')
       const isHeic = nameLower.endsWith('.heic') || nameLower.endsWith('.heif')
 
-      // Upload original file to server (server handles HEIC→JPEG, LIVP→extract→JPEG)
-      const result = await uploadFile(file, (percent) => {
+      // ===== Front-end conversion for LIVP: extract HEIC → convert to JPEG =====
+      if (isLivp) {
+        try {
+          processingStatus.value = `解压 ${file.name}`
+          uploadProgress.value = Math.floor((completed / total) * 100)
+
+          const zipData = await file.arrayBuffer()
+          const zip = await JSZip.loadAsync(zipData)
+          let heicEntry = null
+          zip.forEach((relPath, zipEntry) => {
+            const lowPath = relPath.toLowerCase()
+            if ((lowPath.endsWith('.heic') || lowPath.endsWith('.heif')) && !zipEntry.dir) {
+              heicEntry = zipEntry
+            }
+          })
+
+          if (heicEntry) {
+            processingStatus.value = `转码 ${file.name}`
+            const heicBlob = await heicEntry.async('blob')
+            const jpegBlob = await heic2any({ blob: heicBlob, toType: 'image/jpeg' })
+            const jpegResult = Array.isArray(jpegBlob) ? jpegBlob[0] : jpegBlob
+            uploadFileObj = new File([jpegResult], file.name.replace(/\.livp$/i, '.jpg'), { type: 'image/jpeg' })
+            isConverted = true
+          }
+          // If no HEIC found inside, fallback to upload original LIVP
+        } catch (convErr) {
+          console.warn('LIVP conversion failed for', file.name, ', uploading original', convErr)
+          uploadFileObj = file
+        }
+      }
+
+      // ===== Front-end conversion for HEIC: convert to JPEG =====
+      if (isHeic && !isConverted) {
+        try {
+          processingStatus.value = `转码 ${file.name}`
+          uploadProgress.value = Math.floor((completed / total) * 100)
+
+          const convertedBlob = await heic2any({ blob: file, toType: 'image/jpeg' })
+          const jpegBlob = Array.isArray(convertedBlob) ? convertedBlob[0] : convertedBlob
+          uploadFileObj = new File([jpegBlob], file.name.replace(/\.(heic|heif)$/i, '.jpg'), { type: 'image/jpeg' })
+          isConverted = true
+        } catch (convErr) {
+          console.warn('HEIC conversion failed for', file.name, ', uploading original', convErr)
+          uploadFileObj = file
+        }
+      }
+
+      // ===== Compute hash (from JPEG for converted files) =====
+      processingStatus.value = `分析 ${file.name}`
+      let hash = ''
+      try {
+        hash = await computeHash(uploadFileObj)
+        const dupCheck = isDuplicate(hash, existingHashes, duplicateThreshold.value)
+        if (dupCheck.isDuplicate) {
+          duplicate++
+          completed++
+          continue
+        }
+      } catch (hashErr) {
+        console.warn('Hash computation failed for', file.name, ', skipping dedup')
+        hash = (isLivp ? 'livp_' : 'skip_') + file.name
+      }
+
+      // ===== Upload =====
+      processingStatus.value = `上传 ${file.name}`
+      const result = await uploadFile(uploadFileObj, (percent) => {
         const overallPercent = Math.floor(((completed + (percent / 100)) / total) * 100)
         uploadProgress.value = overallPercent
       })
 
       const imgUrl = getImageUrl(result.key)
-
-      // Compute hash for dedup (skip for .livp, may fail for .heic on some browsers)
-      let hash = ''
-      if (isLivp) {
-        hash = 'livp_' + file.name
-      } else {
-        try {
-          hash = await computeHash(file)
-
-          // Check for content duplicates
-          const dupCheck = isDuplicate(hash, existingHashes, duplicateThreshold.value)
-          if (dupCheck.isDuplicate) {
-            // Duplicate found — remove the uploaded file from server
-            try { await batchDeleteFiles([result.key]) } catch {}
-            duplicate++
-            completed++
-            continue
-          }
-        } catch (hashErr) {
-          console.warn('Hash computation failed for', file.name, ', skipping dedup')
-          hash = 'skip_' + file.name
-        }
-      }
 
       await addImageMeta({
         qiniuKey: result.key,
@@ -252,6 +299,7 @@ async function onFileChange(event) {
     }
   }
 
+  processingStatus.value = ''
   uploadProgress.value = 0
   loading.value = false
   event.target.value = ''
