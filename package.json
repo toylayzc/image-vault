@@ -9,7 +9,6 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "heic2any": "^0.0.4",
     "idb": "^8.0.3",
     "jszip": "^3.10.1",
     "vant": "^4.9.24",

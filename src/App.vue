@@ -22,12 +22,14 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted } from 'vue'
-import Album from './views/Album.vue'
-import Groups from './views/Groups.vue'
-import Settings from './views/Settings.vue'
-import SharedViewer from './views/SharedViewer.vue'
-import Login from './views/Login.vue'
+import { ref, computed, onMounted, defineAsyncComponent } from 'vue'
+
+// Dynamic imports — only load what the user visits
+const Album = defineAsyncComponent(() => import('./views/Album.vue'))
+const Groups = defineAsyncComponent(() => import('./views/Groups.vue'))
+const Settings = defineAsyncComponent(() => import('./views/Settings.vue'))
+const SharedViewer = defineAsyncComponent(() => import('./views/SharedViewer.vue'))
+const Login = defineAsyncComponent(() => import('./views/Login.vue'))
 import { getExpiredDownloadedImages, deleteImage } from './utils/db.js'
 import { batchDeleteFiles, deleteShareData } from './api/qiniu.js'
 import config from './config.js'

@@ -248,7 +248,7 @@ app.get("/files", (req, res) => {
   });
 });
 
-// 生成缩略图（200px 宽，JPEG quality 60）
+// 生成缩略图（200px 宽，WebP quality 60）
 app.get("/thumbnail/:key", async (req, res) => {
   try {
     const { key } = req.params;
@@ -259,19 +259,20 @@ app.get("/thumbnail/:key", async (req, res) => {
       return res.status(404).json({ error: "not found" });
     }
 
-    // Use a simple cache key based on the filename
-    const thumbName = "thumb_" + path.basename(key, path.extname(key)) + ".jpg";
+    // Use WebP for smaller thumbnails
+    const thumbName = "thumb_" + path.basename(key, path.extname(key)) + ".webp";
     const thumbPath = path.join(THUMBS_DIR, thumbName);
 
     // Check if thumbnail already exists in cache
     if (!fs.existsSync(thumbPath)) {
       await sharp(sourcePath)
         .resize(200, undefined, { fit: "inside", withoutEnlargement: true })
-        .jpeg({ quality: 60 })
+        .webp({ quality: 60 })
         .toFile(thumbPath);
     }
 
     res.setHeader("Cache-Control", "public, max-age=86400");
+    res.setHeader("Content-Type", "image/webp");
     res.sendFile(thumbPath);
   } catch (e) {
     // Fallback: return original file if thumbnail fails
