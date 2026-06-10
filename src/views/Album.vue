@@ -112,8 +112,7 @@ import { ref, onMounted } from 'vue'
 import { showToast } from 'vant'
 import { getAllImages, addImageMeta, getAllHashes, deleteImage, getSetting } from '../utils/db.js'
 import { computeHash, isDuplicate } from '../utils/hash.js'
-import { uploadFile, getImageUrl, getThumbnailUrl, generateId, batchDeleteFiles } from '../api/qiniu.js'
-import config from '../config.js'
+import { uploadFile, getImageUrl, getThumbnailUrl, batchDeleteFiles } from '../api/qiniu.js'
 import heic2any from 'heic2any'
 
 const images = ref([])
@@ -219,25 +218,19 @@ async function onFileChange(event) {
         continue
       }
 
-      // Generate unique key in Qiniu
-      const ext = processedFile.name.split('.').pop() || 'jpg'
-      const qiniuKey = `${config.photoPrefix}${generateId()}.${ext}`
-
-      // Upload to Qiniu (use the converted file for HEIC)
-      const result = await uploadFile(processedFile, qiniuKey, (percent) => {
-        // Global progress
+      // Upload to server (use the converted file for HEIC)
+      const result = await uploadFile(processedFile, (percent) => {
         const overallPercent = Math.floor(((completed + (percent / 100)) / total) * 100)
         uploadProgress.value = overallPercent
       })
 
-      const qiniuUrl = getImageUrl(result.key)
+      const imgUrl = getImageUrl(result.key)
 
-      // Store metadata in IndexedDB
       await addImageMeta({
         qiniuKey: result.key,
-        qiniuUrl,
+        qiniuUrl: imgUrl,
         hash,
-        filename: file.name, // store original filename
+        filename: file.name,
         groupIndex: -1
       })
 

@@ -1,86 +1,119 @@
 /**
- * 七牛云 API 封装
- * 处理文件上传、分享数据存储、文件删除
+ * 图片 API 封装
+ * 所有图片存储在服务器本地 /uploads/ 目录
  */
-import * as qiniu from 'qiniu-js'
 import config from '../config.js'
 
-// 缓存的上传凭证（每小时刷新）
-let cachedToken = null
-let tokenExpireTime = 0
+/**
+ * 上传单张图片到服务器
+ * @param {File} file
+ * @param {Function} onProgress 进度回调
+ * @returns {Promise<{key: string, url: string, fsize: number}>}
+ */
+export async function uploadFile(file, onProgress) {
+  const formData = new FormData()
+  formData.append('file', file)
 
-async function getUploadToken() {
-  if (cachedToken && Date.now() < tokenExpireTime) return cachedToken
-  const resp = await fetch('/upload-token', { method: 'POST' })
-  if (!resp.ok) throw new Error('获取上传凭证失败: ' + resp.status)
-  const data = await resp.json()
-  cachedToken = data.token
-  tokenExpireTime = Date.now() + 55 * 60 * 1000
-  return cachedToken
-}
-
-export async function uploadFile(file, key, onProgress) {
-  const token = await getUploadToken()
   return new Promise((resolve, reject) => {
-    const observable = qiniu.upload(file, key, token, {
-      fname: file.name,
-      mimeType: file.type
-    }, {
-      useCdnDomain: false,
-      uphost: ['up.qiniup.com', 'upload.qiniup.com', 'up.qiniu.com', 'upload.qiniu.com']
-    })
-    observable.subscribe({
-      next(res) {
-        const percent = Math.floor((res.total.loaded / res.total.size) * 100)
-        if (onProgress) onProgress(percent)
-      },
-      error(err) { reject(err) },
-      complete(res) {
-        resolve({ key: res.key, hash: res.hash, fsize: res.fsize })
+    const xhr = new XMLHttpRequest()
+    xhr.open('POST', '/upload')
+
+    xhr.upload.onprogress = (e) => {
+      if (e.lengthComputable && onProgress) {
+        onProgress(Math.floor((e.loaded / e.total) * 100))
       }
-    })
+    }
+
+    xhr.onload = () => {
+      if (xhr.status === 200) {
+        resolve(JSON.parse(xhr.responseText))
+      } else {
+        reject(new Error('上传失败: ' + xhr.status))
+      }
+    }
+
+    xhr.onerror = () => reject(new Error('网络错误'))
+    xhr.send(formData)
   })
 }
 
+/**
+ * 批量上传
+ */
+export async function uploadFiles(files, onProgress) {
+  const formData = new FormData()
+  for (const file of files) {
+    formData.append('files', file)
+  }
+  const resp = await fetch('/uploads', { method: 'POST', body: formData })
+  if (!resp.ok) throw new Error('上传失败: ' + resp.status)
+  return await resp.json()
+}
+
+/**
+ * 获取图片的访问 URL
+ */
 export function getImageUrl(key) {
-  return `${config.cdnDomain}/${key}`
+  return '/uploads/' + key
 }
 
-export function getThumbnailUrl(key, width = 200, height = 200) {
-  return `${config.cdnDomain}/${key}?imageView2/1/w/${width}/h/${height}`
+/**
+ * 获取缩略图 URL（直接返回原图，让浏览器缩放）
+ * 服务器端可以用 sharp 做缩略图，当前简化处理
+ */
+export function getThumbnailUrl(key) {
+  return '/uploads/' + key
 }
 
+/**
+ * 获取服务器所有文件列表
+ */
+export async function fetchAllFiles() {
+  const resp = await fetch('/files')
+  if (!resp.ok) throw new Error('获取文件列表失败')
+  const data = await resp.json()
+  return data.items || []
+}
+
+/**
+ * 上传分享数据
+ */
 export async function uploadShareData(shareId, data) {
   const jsonStr = JSON.stringify(data)
   const blob = new Blob([jsonStr], { type: 'application/json' })
-  const key = config.sharePrefix + shareId + '.json'
-  return await uploadFile(blob, key)
+  const file = new File([blob], shareId + '.json')
+  const result = await uploadFile(file)
+  return result
 }
 
+/**
+ * 获取分享数据
+ */
 export async function fetchShareData(shareId) {
   try {
-    const url = getImageUrl(config.sharePrefix + shareId + '.json')
-    const resp = await fetch(url)
+    const resp = await fetch('/uploads/' + shareId + '.json')
     if (!resp.ok) return null
     return await resp.json()
   } catch { return null }
 }
 
+/**
+ * 批量删除文件
+ */
 export async function batchDeleteFiles(keys) {
   if (!keys || keys.length === 0) return
-  try {
-    const resp = await fetch('/batch-delete', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ keys })
-    })
-    if (!resp.ok) console.warn('删除失败:', resp.status)
-    return await resp.json()
-  } catch (e) {
-    console.warn('删除API不可达:', e.message)
-  }
+  const resp = await fetch('/batch-delete', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ keys })
+  })
+  if (!resp.ok) console.warn('删除失败:', resp.status)
+  return await resp.json()
 }
 
+/**
+ * 生成唯一 ID
+ */
 export function generateId() {
   return Date.now().toString(36) + Math.random().toString(36).slice(2, 8)
 }

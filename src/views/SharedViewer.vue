@@ -26,7 +26,7 @@
 
       <div class="image-grid">
         <div class="image-item" v-for="(img, idx) in shareData.images" :key="idx">
-          <img :src="getImageUrl(img.key) + '?imageView2/1/w/300/h/300'" :alt="img.filename" @click="previewIdx = idx; showPreview = true" loading="lazy" />
+          <img :src="getImageUrl(img.key)" :alt="img.filename" @click="previewIdx = idx; showPreview = true" loading="lazy" />
         </div>
       </div>
 
