@@ -30,6 +30,10 @@
       <van-cell title="清除所有图片数据" is-link @click="onClearAll" />
     </van-cell-group>
 
+    <van-cell-group title="账号">
+      <van-cell title="退出登录" is-link @click="onLogout" />
+    </van-cell-group>
+
     <van-cell-group title="关于">
       <van-cell title="版本" value="1.1.0" />
       <van-cell title="说明" label="图片存储在服务器本地，元数据存储在浏览器本地。分享所有分组后，打开链接可看到每组的照片并一键下载。" />
@@ -118,6 +122,11 @@ async function onManualCleanup() {
 
 function onClearAll() {
   showClearConfirm.value = true
+}
+
+function onLogout() {
+  localStorage.removeItem('loggedIn')
+  window.location.reload()
 }
 
 async function doClearAll() {

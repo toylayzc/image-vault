@@ -1,10 +1,13 @@
 <template>
   <div class="app-container" :class="{ 'shared-mode': isSharedView }">
+    <!-- Login page -->
+    <Login v-if="!isSharedView && !isLoggedIn" @login-success="isLoggedIn = true" />
+
     <!-- Shared view route -->
     <SharedViewer v-if="isSharedView" />
 
     <!-- Main app tabs -->
-    <template v-if="!isSharedView">
+    <template v-if="!isSharedView && isLoggedIn">
       <Album v-if="activeTab === 'album'" />
       <Groups v-if="activeTab === 'groups'" />
       <Settings v-if="activeTab === 'settings'" />
@@ -24,11 +27,13 @@ import Album from './views/Album.vue'
 import Groups from './views/Groups.vue'
 import Settings from './views/Settings.vue'
 import SharedViewer from './views/SharedViewer.vue'
+import Login from './views/Login.vue'
 import { getExpiredDownloadedImages, deleteImage } from './utils/db.js'
 import { batchDeleteFiles, deleteShareData } from './api/qiniu.js'
 import config from './config.js'
 
 const activeTab = ref('album')
+const isLoggedIn = ref(!!localStorage.getItem('loggedIn'))
 
 const isSharedView = computed(() => {
   return window.location.hash.startsWith('#/share/')
@@ -36,7 +41,7 @@ const isSharedView = computed(() => {
 
 // Auto-cleanup: check expired files on mount
 onMounted(async () => {
-  if (isSharedView.value) return
+  if (isSharedView.value || !isLoggedIn.value) return
 
   try {
     // Expired images (downloaded > retainDays ago)
