@@ -32,7 +32,7 @@
 
     <van-cell-group title="关于">
       <van-cell title="版本" value="1.1.0" />
-      <van-cell title="说明" label="图片存储在七牛云 Kodo，元数据存储在浏览器本地。分享链接 3 天后自动清理。" />
+      <van-cell title="说明" label="图片存储在服务器本地，元数据存储在浏览器本地。分享所有分组后，打开链接可看到每组的照片并一键下载。" />
     </van-cell-group>
 
     <van-dialog v-model:show="showClearConfirm" title="确认清除" show-cancel-button @confirm="doClearAll">
@@ -44,7 +44,7 @@
 <script setup>
 import { ref, onMounted, computed, watch } from 'vue'
 import { showToast } from 'vant'
-import { getAllImages, clearAllImages, getSetting, setSetting, getStorageStats, getExpiredDownloadedImages, getExpiredShares, deleteShare, deleteImage } from '../utils/db.js'
+import { getAllImages, clearAllImages, getSetting, setSetting, getStorageStats, getExpiredDownloadedImages, deleteImage } from '../utils/db.js'
 import { batchDeleteFiles } from '../api/qiniu.js'
 import config from '../config.js'
 
@@ -93,16 +93,22 @@ async function onManualCleanup() {
       }
     }
 
-    // Clean expired shares
-    const expiredShares = await getExpiredShares(retainDays.value)
-    for (const share of expiredShares) {
-      try {
-        await batchDeleteFiles([`${config.sharePrefix}${share.shareId}.json`])
-      } catch {}
-      await deleteShare(share.shareId)
-    }
+    // Clean expired shares via server
+    let expiredSharesCount = 0
+    try {
+      const resp = await fetch('/cleanup-expired-shares', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ retainDays: retainDays.value })
+      })
+      const result = await resp.json()
+      expiredSharesCount = result.deleted || 0
+    } catch (e) { console.warn('Share cleanup error:', e) }
 
-    showToast(`已清理 ${expiredImgs.length} 张图片, ${expiredShares.length} 个分享`)
+    const msgParts = []
+    if (expiredImgs.length > 0) msgParts.push(`${expiredImgs.length} 张图片`)
+    if (expiredSharesCount > 0) msgParts.push(`${expiredSharesCount} 个分享`)
+    showToast(`已清理 ${msgParts.join(', ') || '无过期文件'}`)
     await loadStats()
   } catch (e) {
     console.error('Cleanup error:', e)

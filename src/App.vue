@@ -24,8 +24,8 @@ import Album from './views/Album.vue'
 import Groups from './views/Groups.vue'
 import Settings from './views/Settings.vue'
 import SharedViewer from './views/SharedViewer.vue'
-import { getExpiredShares, getExpiredDownloadedImages, deleteShare, deleteImage } from './utils/db.js'
-import { batchDeleteFiles } from './api/qiniu.js'
+import { getExpiredDownloadedImages, deleteImage } from './utils/db.js'
+import { batchDeleteFiles, deleteShareData } from './api/qiniu.js'
 import config from './config.js'
 
 const activeTab = ref('album')
@@ -48,14 +48,16 @@ onMounted(async () => {
       for (const img of expiredImgs) { await deleteImage(img.id) }
     }
 
-    // Expired shares
-    const expiredShares = await getExpiredShares(config.retainDays)
-    for (const share of expiredShares) {
-      if (share.shareId) {
-        try { await batchDeleteFiles([`${config.sharePrefix}${share.shareId}.json`]) } catch {}
-      }
-      await deleteShare(share.shareId)
-    }
+    // Cleanup: notify server to remove expired share files
+    try {
+      const resp = await fetch('/cleanup-expired-shares', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ retainDays: config.retainDays })
+      })
+      const result = await resp.json()
+      if (result.deleted > 0) console.log(`Cleaned ${result.deleted} expired shares`)
+    } catch (e) { console.warn('Share cleanup error:', e) }
   } catch (e) {
     console.warn('Auto-cleanup error:', e)
   }

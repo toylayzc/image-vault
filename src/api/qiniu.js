@@ -76,25 +76,37 @@ export async function fetchAllFiles() {
 }
 
 /**
- * 上传分享数据
+ * 保存分享数据（所有分组一起分享）
+ * POST /save-share-data → 用指定 shareId 保存到 shares/ 目录
  */
-export async function uploadShareData(shareId, data) {
-  const jsonStr = JSON.stringify(data)
-  const blob = new Blob([jsonStr], { type: 'application/json' })
-  const file = new File([blob], shareId + '.json')
-  const result = await uploadFile(file)
-  return result
+export async function saveShareData(shareId, groups) {
+  const resp = await fetch('/save-share-data', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ shareId, groups })
+  })
+  if (!resp.ok) throw new Error('保存分享数据失败: ' + resp.status)
+  return await resp.json()
 }
 
 /**
- * 获取分享数据
+ * 获取分享数据（通过 API）
  */
 export async function fetchShareData(shareId) {
   try {
-    const resp = await fetch('/uploads/' + shareId + '.json')
+    const resp = await fetch('/share-data/' + shareId)
     if (!resp.ok) return null
     return await resp.json()
   } catch { return null }
+}
+
+/**
+ * 删除分享数据
+ */
+export async function deleteShareData(shareId) {
+  const resp = await fetch('/share-data/' + shareId, { method: 'DELETE' })
+  if (!resp.ok) console.warn('删除分享数据失败:', resp.status)
+  return await resp.json()
 }
 
 /**

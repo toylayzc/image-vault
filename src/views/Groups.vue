@@ -32,7 +32,10 @@
     <!-- Group summary -->
     <div class="summary-bar" v-if="groups.length > 0">
       <span>共 {{ images.length }} 张 → {{ groups.length }} 组</span>
-      <van-button size="mini" plain @click="onReshuffle">重新打乱</van-button>
+      <div class="summary-actions">
+        <van-button size="mini" plain type="primary" icon="share-o" @click="onShareAll" :loading="sharingAll">分享所有分组</van-button>
+        <van-button size="mini" plain @click="onReshuffle" style="margin-left:6px">重新打乱</van-button>
+      </div>
     </div>
 
     <!-- Group list -->
@@ -40,7 +43,6 @@
       <van-cell v-for="(group, idx) in groups" :key="idx" center @click="showGroupDetail(idx)">
         <template #title>
           <span class="group-title">第 {{ idx + 1 }} 组</span>
-          <van-tag v-if="isShared(idx)" type="success" size="mini" style="margin-left:6px">已分享</van-tag>
           <van-tag v-if="isDownloaded(idx)" type="warning" size="mini" style="margin-left:4px">已下载</van-tag>
         </template>
         <template #label>
@@ -51,7 +53,6 @@
         </template>
         <template #value>
           <span class="group-count">{{ group.length }} 张</span>
-          <van-button size="mini" plain type="primary" icon="share-o" @click.stop="onShare(idx)" style="margin-right:4px">分享</van-button>
           <van-icon name="arrow" />
         </template>
       </van-cell>
@@ -69,11 +70,11 @@
     </van-popup>
 
     <!-- Share dialog -->
-    <van-dialog v-model:show="showShareDialog" title="分享分组" confirm-button-text="复制链接" @confirm="copyShareLink">
+    <van-dialog v-model:show="showShareDialog" title="分享所有分组" confirm-button-text="复制链接" @confirm="copyShareLink">
       <div style="padding:16px">
-        <p>已生成分享链接：</p>
+        <p>已生成分享链接，可查看所有分组：</p>
         <div style="background:#f5f5f5;padding:8px;border-radius:4px;font-size:12px;word-break:break-all">{{ shareLink }}</div>
-        <p style="color:#999;font-size:12px;margin-top:8px">此链接可查看该组照片<br/>下载完成后 3 天自动清理</p>
+        <p style="color:#999;font-size:12px;margin-top:8px">打开链接可看到全部 {{ groups.length }} 组照片<br/>每人可找到自己的组并一键下载<br/>分享数据 3 天后自动清理</p>
       </div>
     </van-dialog>
   </div>
@@ -81,10 +82,10 @@
 
 <script setup>
 import { ref, onMounted, computed } from 'vue'
-import { showToast, showDialog } from 'vant'
-import { getAllImages, updateImageGroup, getSetting, createShare, getAllShares } from '../utils/db.js'
+import { showToast } from 'vant'
+import { getAllImages, updateImageGroup, getSetting } from '../utils/db.js'
 import { autoGroup, shuffle } from '../utils/group.js'
-import { uploadShareData, generateId, getThumbnailUrl } from '../api/qiniu.js'
+import { saveShareData, generateId, getThumbnailUrl } from '../api/qiniu.js'
 
 const images = ref([])
 const groups = ref([])
@@ -92,10 +93,9 @@ const groupSize = ref(6)
 const showDetail = ref(false)
 const currentGroupIdx = ref(0)
 const currentGroup = ref([])
-const shares = ref([])
 const showShareDialog = ref(false)
 const shareLink = ref('')
-const sharingGroupIdx = ref(-1)
+const sharingAll = ref(false)
 
 const presets = computed(() => {
   const total = images.value.length
@@ -105,7 +105,6 @@ const presets = computed(() => {
 onMounted(async () => {
   const g = await getSetting('defaultGroupSize')
   if (g !== null) groupSize.value = g
-  shares.value = await getAllShares()
   await loadImages()
 })
 
@@ -129,10 +128,6 @@ async function restoreGroups() {
   groups.value = Object.keys(grouped).length > 0
     ? Object.entries(grouped).sort(([a],[b]) => parseInt(a)-parseInt(b)).map(([_,imgs]) => imgs)
     : []
-}
-
-function isShared(groupIdx) {
-  return shares.value.some(s => s.groupIndex === groupIdx)
 }
 
 function isDownloaded(groupIdx) {
@@ -180,37 +175,37 @@ function showGroupDetail(idx) {
   showDetail.value = true
 }
 
-async function onShare(idx) {
-  sharingGroupIdx.value = idx
-  const group = groups.value[idx]
-  if (!group || group.length === 0) { showToast('该组没有图片'); return }
+async function onShareAll() {
+  if (groups.value.length === 0) { showToast('请先自动分组'); return }
+  const flatCount = groups.value.reduce((sum, g) => sum + g.length, 0)
+  if (flatCount === 0) { showToast('没有可分享的图片'); return }
 
   try {
+    sharingAll.value = true
     showToast('正在生成分享链接...')
     const shareId = generateId()
-    const shareData = {
+
+    // 构建所有分组数据
+    const groupsData = groups.value.map((group, idx) => ({
       groupIndex: idx,
       groupName: `第 ${idx + 1} 组`,
       images: group.map(img => ({
         key: img.qiniuKey,
         filename: img.filename
-      })),
-      createdAt: Date.now()
-    }
+      }))
+    }))
 
-    // Upload share data to Qiniu
-    await uploadShareData(shareId, shareData)
+    // 保存到服务器
+    await saveShareData(shareId, groupsData)
 
-    // Record in IndexedDB
-    await createShare(shareId, idx, shareData)
-
-    // Generate link
+    // 生成链接
     shareLink.value = `${window.location.origin}${window.location.pathname}#/share/${shareId}`
-    shares.value = await getAllShares()
     showShareDialog.value = true
   } catch (e) {
     console.error('Share error:', e)
-    showToast('分享失败，请检查 Worker 配置')
+    showToast('分享失败')
+  } finally {
+    sharingAll.value = false
   }
 }
 
@@ -239,6 +234,7 @@ async function copyShareLink() {
 .presets { display: flex; align-items: center; padding: 8px 0 0; flex-wrap: wrap; gap: 4px; }
 .preset-label { font-size: 12px; color: #999; margin-right: 4px; white-space: nowrap; }
 .summary-bar { display: flex; justify-content: space-between; align-items: center; padding: 10px 16px; background: #fff; font-size: 13px; color: #666; border-bottom: 1px solid #f0f0f0; }
+.summary-actions { display: flex; align-items: center; white-space: nowrap; }
 .group-list { padding-bottom: 60px; }
 .group-title { font-weight: 500; font-size: 15px; }
 .group-preview { display: flex; gap: 4px; margin-top: 6px; align-items: center; }
