@@ -58,11 +58,10 @@ export function getImageUrl(key) {
 }
 
 /**
- * 获取缩略图 URL（直接返回原图，让浏览器缩放）
- * 服务器端可以用 sharp 做缩略图，当前简化处理
+ * 获取缩略图 URL（服务器 sharp 生成 200px 缩略图）
  */
 export function getThumbnailUrl(key) {
-  return '/uploads/' + key
+  return '/thumbnail/' + key
 }
 
 /**

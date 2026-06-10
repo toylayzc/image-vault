@@ -25,10 +25,14 @@ const PORT = 3000;
 // 上传目录
 const UPLOAD_DIR = "/www/wwwroot/api/uploads";
 const SHARES_DIR = path.join(UPLOAD_DIR, "shares");
+const THUMBS_DIR = path.join(UPLOAD_DIR, "thumbs");
 
-// 确保 shares 目录存在
+// 确保目录存在
 if (!fs.existsSync(SHARES_DIR)) {
   fs.mkdirSync(SHARES_DIR, { recursive: true });
+}
+if (!fs.existsSync(THUMBS_DIR)) {
+  fs.mkdirSync(THUMBS_DIR, { recursive: true });
 }
 
 // 配置 multer 存储
@@ -230,7 +234,7 @@ app.get("/files", (req, res) => {
   fs.readdir(UPLOAD_DIR, (err, files) => {
     if (err) return res.status(500).json({ error: err.message });
     const items = files
-      .filter(f => f !== ".gitkeep" && f !== "shares")
+      .filter(f => f !== ".gitkeep" && f !== "shares" && f !== "thumbs")
       .map(f => {
         const stat = fs.statSync(path.join(UPLOAD_DIR, f));
         return {
@@ -242,6 +246,43 @@ app.get("/files", (req, res) => {
       });
     res.json({ items });
   });
+});
+
+// 生成缩略图（200px 宽，JPEG quality 60）
+app.get("/thumbnail/:key", async (req, res) => {
+  try {
+    const { key } = req.params;
+    if (!key) return res.status(400).json({ error: "key required" });
+
+    const sourcePath = path.join(UPLOAD_DIR, key);
+    if (!fs.existsSync(sourcePath)) {
+      return res.status(404).json({ error: "not found" });
+    }
+
+    // Use a simple cache key based on the filename
+    const thumbName = "thumb_" + path.basename(key, path.extname(key)) + ".jpg";
+    const thumbPath = path.join(THUMBS_DIR, thumbName);
+
+    // Check if thumbnail already exists in cache
+    if (!fs.existsSync(thumbPath)) {
+      await sharp(sourcePath)
+        .resize(200, undefined, { fit: "inside", withoutEnlargement: true })
+        .jpeg({ quality: 60 })
+        .toFile(thumbPath);
+    }
+
+    res.setHeader("Cache-Control", "public, max-age=86400");
+    res.sendFile(thumbPath);
+  } catch (e) {
+    // Fallback: return original file if thumbnail fails
+    const key = req.params.key;
+    const sourcePath = path.join(UPLOAD_DIR, key);
+    if (fs.existsSync(sourcePath)) {
+      res.sendFile(sourcePath);
+    } else {
+      res.status(404).json({ error: "not found" });
+    }
+  }
 });
 
 // 删除单张图片

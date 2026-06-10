@@ -30,7 +30,7 @@
             <img
               v-for="(img, i) in group.images.slice(0, 6)"
               :key="i"
-              :src="getImageUrl(img.key)"
+              :src="getThumbnailUrl(img.key)"
               :alt="img.filename"
               class="preview-thumb"
               @click="previewGroup(gIdx, i)"
@@ -67,7 +67,7 @@
 <script setup>
 import { ref, onMounted } from 'vue'
 import { showToast } from 'vant'
-import { fetchShareData, getImageUrl } from '../api/qiniu.js'
+import { fetchShareData, getImageUrl, getThumbnailUrl } from '../api/qiniu.js'
 
 const loading = ref(true)
 const error = ref('')
