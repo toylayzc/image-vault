@@ -128,3 +128,39 @@ export async function batchDeleteFiles(keys) {
 export function generateId() {
   return Date.now().toString(36) + Math.random().toString(36).slice(2, 8)
 }
+
+// ====== 服务器元数据同步 ======
+
+/**
+ * 从服务器获取全部图片列表（合并元数据）
+ */
+export async function fetchSyncData() {
+  const resp = await fetch('/sync')
+  if (!resp.ok) throw new Error('同步数据失败')
+  return await resp.json()
+}
+
+/**
+ * 添加/更新单张图片元数据
+ */
+export async function addMeta(key, filename, hash) {
+  await fetch('/meta/add', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ key, filename, hash })
+  })
+}
+
+/**
+ * 批量更新分组索引
+ */
+export async function batchUpdateMeta(updates) {
+  if (!updates || updates.length === 0) return
+  const resp = await fetch('/meta/batch-update', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ updates })
+  })
+  if (!resp.ok) console.warn('更新元数据失败')
+  return await resp.json()
+}

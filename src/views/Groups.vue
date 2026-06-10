@@ -83,9 +83,9 @@
 <script setup>
 import { ref, onMounted, computed } from 'vue'
 import { showToast } from 'vant'
-import { getAllImages, updateImageGroup, getSetting } from '../utils/db.js'
+import { getSetting, setSetting } from '../utils/db.js'
 import { autoGroup, shuffle } from '../utils/group.js'
-import { saveShareData, generateId, getThumbnailUrl } from '../api/qiniu.js'
+import { saveShareData, generateId, getThumbnailUrl, fetchSyncData, batchUpdateMeta } from '../api/qiniu.js'
 
 const images = ref([])
 const groups = ref([])
@@ -109,10 +109,16 @@ onMounted(async () => {
 })
 
 async function loadImages() {
-  const all = await getAllImages()
-  images.value = all.map(img => ({
-    ...img,
-    thumbnailUrl: getThumbnailUrl(img.qiniuKey)
+  const data = await fetchSyncData()
+  images.value = data.map(item => ({
+    id: item.key,
+    qiniuKey: item.key,
+    qiniuUrl: '/uploads/' + item.key,
+    thumbnailUrl: getThumbnailUrl(item.key),
+    hash: item.hash,
+    filename: item.filename,
+    groupIndex: item.groupIndex,
+    downloaded: item.downloaded
   }))
   await restoreGroups()
 }
@@ -143,11 +149,14 @@ async function onAutoGroup() {
   const size = parseInt(groupSize.value)
   const result = autoGroup(images.value, size, true)
   groups.value = result
+  // Sync group indices to server
+  const updates = []
   for (let gi = 0; gi < result.length; gi++) {
     for (const img of result[gi]) {
-      await updateImageGroup(img.id, gi)
+      updates.push({ key: img.qiniuKey, groupIndex: gi })
     }
   }
+  await batchUpdateMeta(updates)
   showToast(`已分为 ${result.length} 组，每组 ${size} 张`)
 }
 
@@ -161,11 +170,14 @@ async function onReshuffle() {
     newGroups.push(shuffled.slice(i, i + size))
   }
   groups.value = newGroups
+  // Sync to server
+  const updates = []
   for (let gi = 0; gi < newGroups.length; gi++) {
     for (const img of newGroups[gi]) {
-      await updateImageGroup(img.id, gi)
+      updates.push({ key: img.qiniuKey, groupIndex: gi })
     }
   }
+  await batchUpdateMeta(updates)
   showToast('已重新打乱分组')
 }
 

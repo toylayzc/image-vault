@@ -26,6 +26,8 @@ const PORT = 3000;
 const UPLOAD_DIR = "/www/wwwroot/api/uploads";
 const SHARES_DIR = path.join(UPLOAD_DIR, "shares");
 const THUMBS_DIR = path.join(UPLOAD_DIR, "thumbs");
+const DATA_DIR = path.join(UPLOAD_DIR, "data");
+const META_FILE = path.join(DATA_DIR, "meta.json");
 
 // 确保目录存在
 if (!fs.existsSync(SHARES_DIR)) {
@@ -33,6 +35,38 @@ if (!fs.existsSync(SHARES_DIR)) {
 }
 if (!fs.existsSync(THUMBS_DIR)) {
   fs.mkdirSync(THUMBS_DIR, { recursive: true });
+}
+if (!fs.existsSync(DATA_DIR)) {
+  fs.mkdirSync(DATA_DIR, { recursive: true });
+}
+
+// 加载/保存元数据
+function loadMeta() {
+  try {
+    if (!fs.existsSync(META_FILE)) return [];
+    return JSON.parse(fs.readFileSync(META_FILE, "utf-8"));
+  } catch { return []; }
+}
+
+function saveMeta(data) {
+  fs.writeFileSync(META_FILE, JSON.stringify(data, null, 2), "utf-8");
+}
+
+// 向 meta.json 添加一条记录（上传成功时调用）
+function addMetaEntry(key, originalname) {
+  const meta = loadMeta();
+  const existing = meta.find(m => m.key === key);
+  if (!existing) {
+    meta.push({
+      key,
+      filename: originalname || key,
+      hash: "",
+      groupIndex: -1,
+      timestamp: Date.now(),
+      downloaded: false
+    });
+    saveMeta(meta);
+  }
 }
 
 // 配置 multer 存储
@@ -84,6 +118,7 @@ app.post("/upload", upload.single("file"), async (req, res) => {
           fsize: fs.statSync(jpegPath).size,
           originalname: req.file.originalname
         });
+        addMetaEntry(baseName + ".jpg", req.file.originalname);
       } catch (convErr) {
         console.error("HEIC convert failed:", convErr);
         // 转码失败则返回原文件
@@ -93,6 +128,7 @@ app.post("/upload", upload.single("file"), async (req, res) => {
           fsize: req.file.size,
           originalname: req.file.originalname
         });
+        addMetaEntry(req.file.filename, req.file.originalname);
       }
       return;
     }
@@ -132,6 +168,7 @@ app.post("/upload", upload.single("file"), async (req, res) => {
             fsize: fs.statSync(jpegPath).size,
             originalname: req.file.originalname
           });
+          addMetaEntry(baseName + ".jpg", req.file.originalname);
         } else {
           // livp 中没有找到 HEIC，返回原文件
           res.json({
@@ -140,6 +177,7 @@ app.post("/upload", upload.single("file"), async (req, res) => {
             fsize: req.file.size,
             originalname: req.file.originalname
           });
+          addMetaEntry(req.file.filename, req.file.originalname);
         }
       } catch (livpErr) {
         console.error("LIVP extract failed:", livpErr);
@@ -150,6 +188,7 @@ app.post("/upload", upload.single("file"), async (req, res) => {
           fsize: req.file.size,
           originalname: req.file.originalname
         });
+        addMetaEntry(req.file.filename, req.file.originalname);
       }
       return;
     }
@@ -161,6 +200,7 @@ app.post("/upload", upload.single("file"), async (req, res) => {
       fsize: req.file.size,
       originalname: req.file.originalname
     });
+    addMetaEntry(req.file.filename, req.file.originalname);
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -294,10 +334,15 @@ app.post("/delete", (req, res) => {
     const filePath = path.join(UPLOAD_DIR, key);
     if (fs.existsSync(filePath)) {
       fs.unlinkSync(filePath);
-      res.json({ success: true });
-    } else {
-      res.json({ success: true, note: "not found" });
     }
+    // Also remove from metadata
+    const meta = loadMeta();
+    const idx = meta.findIndex(m => m.key === key);
+    if (idx >= 0) {
+      meta.splice(idx, 1);
+      saveMeta(meta);
+    }
+    res.json({ success: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -312,7 +357,143 @@ app.post("/batch-delete", (req, res) => {
       const fp = path.join(UPLOAD_DIR, key);
       if (fs.existsSync(fp)) { fs.unlinkSync(fp); deleted++; }
     }
+    // Also remove from metadata
+    const meta = loadMeta();
+    const keySet = new Set(keys);
+    const filtered = meta.filter(m => !keySet.has(m.key));
+    if (filtered.length !== meta.length) {
+      saveMeta(filtered);
+    }
     res.json({ success: true, deleted });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ====== 元数据 API（跨设备同步图片列表和分组） ======
+
+// 获取所有图片元数据
+app.get("/meta", (req, res) => {
+  try {
+    const meta = loadMeta();
+    res.json(meta);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// 添加/更新图片元数据（上传时调用）
+app.post("/meta/add", (req, res) => {
+  try {
+    const { key, filename, hash } = req.body;
+    if (!key) return res.status(400).json({ error: "key required" });
+
+    const meta = loadMeta();
+    const existing = meta.find(m => m.key === key);
+    if (existing) {
+      // Update existing
+      if (filename) existing.filename = filename;
+      if (hash !== undefined) existing.hash = hash;
+    } else {
+      meta.push({
+        key,
+        filename: filename || key,
+        hash: hash || "",
+        groupIndex: -1,
+        timestamp: Date.now(),
+        downloaded: false
+      });
+    }
+    saveMeta(meta);
+    res.json({ success: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// 批量更新分组索引
+app.post("/meta/batch-update", (req, res) => {
+  try {
+    const { updates } = req.body;
+    if (!updates || !Array.isArray(updates)) {
+      return res.status(400).json({ error: "updates array required" });
+    }
+
+    const meta = loadMeta();
+    for (const { key, groupIndex } of updates) {
+      const entry = meta.find(m => m.key === key);
+      if (entry) {
+        entry.groupIndex = groupIndex;
+      }
+    }
+    saveMeta(meta);
+    res.json({ success: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// 删除元数据
+app.post("/meta/delete", (req, res) => {
+  try {
+    const { key } = req.body;
+    if (!key) return res.status(400).json({ error: "key required" });
+    const meta = loadMeta();
+    const idx = meta.findIndex(m => m.key === key);
+    if (idx >= 0) {
+      meta.splice(idx, 1);
+      saveMeta(meta);
+    }
+    res.json({ success: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// 批量删除元数据
+app.post("/meta/batch-delete", (req, res) => {
+  try {
+    const { keys } = req.body;
+    if (!keys || !Array.isArray(keys)) {
+      return res.status(400).json({ error: "keys array required" });
+    }
+    const meta = loadMeta();
+    const keySet = new Set(keys);
+    const filtered = meta.filter(m => !keySet.has(m.key));
+    saveMeta(filtered);
+    res.json({ success: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// 同步：获取所有文件 + 元数据合并
+app.get("/sync", (req, res) => {
+  try {
+    const meta = loadMeta();
+    const metaMap = {};
+    for (const m of meta) {
+      metaMap[m.key] = m;
+    }
+
+    // List all files on disk
+    const diskFiles = fs.readdirSync(UPLOAD_DIR)
+      .filter(f => f !== ".gitkeep" && f !== "shares" && f !== "thumbs" && f !== "data")
+      .map(f => {
+        const stat = fs.statSync(path.join(UPLOAD_DIR, f));
+        return { key: f, fsize: stat.size, mtime: stat.mtimeMs };
+      });
+
+    // Merge: disk files + stored metadata
+    const result = diskFiles.map(f => {
+      const m = metaMap[f.key] || {};
+      return {
+        key: f.key,
+        filename: m.filename || f.key,
+        hash: m.hash || "",
+        groupIndex: m.groupIndex !== undefined ? m.groupIndex : -1,
+        timestamp: m.timestamp || f.mtime,
+        downloaded: m.downloaded || false,
+        fsize: f.fsize
+      };
+    });
+
+    // Remove stale meta entries (file no longer on disk)
+    const diskKeys = new Set(diskFiles.map(f => f.key));
+    const cleanedMeta = meta.filter(m => diskKeys.has(m.key));
+    if (cleanedMeta.length !== meta.length) {
+      saveMeta(cleanedMeta);
+    }
+
+    res.json(result);
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 

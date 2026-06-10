@@ -48,8 +48,8 @@
 <script setup>
 import { ref, onMounted, computed, watch } from 'vue'
 import { showToast } from 'vant'
-import { getAllImages, clearAllImages, getSetting, setSetting, getStorageStats, getExpiredDownloadedImages, deleteImage } from '../utils/db.js'
-import { batchDeleteFiles } from '../api/qiniu.js'
+import { getSetting, setSetting } from '../utils/db.js'
+import { batchDeleteFiles, fetchSyncData } from '../api/qiniu.js'
 import config from '../config.js'
 
 const threshold = ref(10)
@@ -78,7 +78,14 @@ async function loadSettings() {
 }
 
 async function loadStats() {
-  stats.value = await getStorageStats()
+  try {
+    const data = await fetchSyncData()
+    stats.value = {
+      total: data.length,
+      downloaded: 0,
+      notDownloaded: data.length
+    }
+  } catch { stats.value = { total: 0, downloaded: 0, notDownloaded: 0 } }
 }
 
 watch(threshold, async (val) => { await setSetting('threshold', val) })
@@ -87,18 +94,7 @@ watch(defaultGroupSize, async (val) => { await setSetting('defaultGroupSize', va
 async function onManualCleanup() {
   showToast('正在清理过期文件...')
   try {
-    // Clean expired images
-    const expiredImgs = await getExpiredDownloadedImages(retainDays.value)
-    if (expiredImgs.length > 0) {
-      const keys = expiredImgs.map(img => img.qiniuKey)
-      await batchDeleteFiles(keys)
-      for (const img of expiredImgs) {
-        await deleteImage(img.id)
-      }
-    }
-
-    // Clean expired shares via server
-    let expiredSharesCount = 0
+    let cleanedShares = 0
     try {
       const resp = await fetch('/cleanup-expired-shares', {
         method: 'POST',
@@ -106,13 +102,10 @@ async function onManualCleanup() {
         body: JSON.stringify({ retainDays: retainDays.value })
       })
       const result = await resp.json()
-      expiredSharesCount = result.deleted || 0
+      cleanedShares = result.deleted || 0
     } catch (e) { console.warn('Share cleanup error:', e) }
 
-    const msgParts = []
-    if (expiredImgs.length > 0) msgParts.push(`${expiredImgs.length} 张图片`)
-    if (expiredSharesCount > 0) msgParts.push(`${expiredSharesCount} 个分享`)
-    showToast(`已清理 ${msgParts.join(', ') || '无过期文件'}`)
+    showToast(`已清理 ${cleanedShares} 个过期分享`)
     await loadStats()
   } catch (e) {
     console.error('Cleanup error:', e)
@@ -131,19 +124,18 @@ function onLogout() {
 
 async function doClearAll() {
   showToast('正在清空...')
-  // Get all keys first
-  const all = await getAllImages()
-  const keys = all.map(img => img.qiniuKey).filter(Boolean)
-  if (keys.length > 0) {
-    try {
+  try {
+    const data = await fetchSyncData()
+    const keys = data.map(item => item.key).filter(Boolean)
+    if (keys.length > 0) {
       await batchDeleteFiles(keys)
-    } catch (e) {
-      console.warn('Batch delete error:', e)
     }
+    stats.value = { total: 0, downloaded: 0, notDownloaded: 0 }
+    showToast(`已清除 ${keys.length} 张图片`)
+  } catch (e) {
+    console.error('Clear all error:', e)
+    showToast('清除失败')
   }
-  await clearAllImages()
-  stats.value = { total: 0, downloaded: 0, notDownloaded: 0 }
-  showToast('已清除所有图片')
 }
 </script>
 

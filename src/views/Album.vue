@@ -130,7 +130,7 @@ import { ref, onMounted } from 'vue'
 import { showToast } from 'vant'
 import { getAllImages, addImageMeta, getAllHashes, getAllFilenames, deleteImage, clearAllImages, getSetting } from '../utils/db.js'
 import { computeHash, isDuplicate } from '../utils/hash.js'
-import { uploadFile, getImageUrl, getThumbnailUrl, batchDeleteFiles } from '../api/qiniu.js'
+import { uploadFile, getImageUrl, getThumbnailUrl, batchDeleteFiles, fetchSyncData, addMeta, batchUpdateMeta } from '../api/qiniu.js'
 import JSZip from 'jszip'
 
 const processingStatus = ref('') // 显示当前处理状态
@@ -164,18 +164,20 @@ onMounted(async () => {
 async function loadImages() {
   loading.value = true
   try {
-    const all = await getAllImages()
-    // Convert qiniuUrl back from stored value
-    images.value = all.map(img => ({
-      ...img,
-      thumbnailUrl: getThumbnailUrl(img.qiniuKey),
-      qiniuUrl: img.qiniuUrl
+    const serverData = await fetchSyncData()
+    images.value = serverData.map(item => ({
+      id: item.key, // use key as ID for simplicity
+      qiniuKey: item.key,
+      qiniuUrl: getImageUrl(item.key),
+      thumbnailUrl: getThumbnailUrl(item.key),
+      hash: item.hash,
+      filename: item.filename,
+      groupIndex: item.groupIndex,
+      downloaded: item.downloaded
     }))
   } catch (e) {
     console.error('Failed to load images:', e)
     showToast('加载图片失败')
-    resultMessage.value = '加载图片失败'
-    setTimeout(() => { resultMessage.value = '' }, 4000)
   } finally {
     loading.value = false
   }
@@ -201,8 +203,9 @@ async function onFileChange(event) {
   if (!fileList || fileList.length === 0) return
 
   loading.value = true
-  const existingHashes = await getAllHashes()
-  const existingFilenames = await getAllFilenames()
+  // Collect existing hashes and filenames from server data for dedup
+  const existingHashes = images.value.map(img => img.hash).filter(Boolean)
+  const existingFilenames = images.value.map(img => img.filename).filter(Boolean)
   const fileArray = Array.from(fileList).filter(f => !existingFilenames.includes(f.name))
 
   const nameDuplicateCount = fileList.length - fileArray.length
@@ -287,13 +290,8 @@ async function onFileChange(event) {
 
       const imgUrl = getImageUrl(result.key)
 
-      await addImageMeta({
-        qiniuKey: result.key,
-        qiniuUrl: imgUrl,
-        hash,
-        filename: file.name,
-        groupIndex: -1
-      })
+      // Save hash to server meta
+      try { await addMeta(result.key, file.name, hash) } catch {}
 
       existingHashes.push(hash)
       existingFilenames.push(file.name)
@@ -349,14 +347,12 @@ function confirmDelete(img) {
 
 async function doDeleteImage() {
   if (!deleteTarget.value) return
-  // Delete from Qiniu
+  // Delete from server
   try {
     await batchDeleteFiles([deleteTarget.value.qiniuKey])
   } catch (e) {
-    console.warn('Qiniu delete error:', e)
+    console.warn('Delete error:', e)
   }
-  // Delete metadata
-  await deleteImage(deleteTarget.value.id)
   showDeleteConfirm.value = false
   deleteTarget.value = null
   showDeleteMode.value = false
@@ -368,20 +364,10 @@ async function doDeleteAll() {
   showDeleteAllConfirm.value = false
   showToast('正在删除全部图片...')
 
-  // Collect all keys from current images
   const keys = images.value.map(img => img.qiniuKey).filter(Boolean)
-
-  // Delete from server
   if (keys.length > 0) {
-    try {
-      await batchDeleteFiles(keys)
-    } catch (e) {
-      console.warn('Batch delete error:', e)
-    }
+    try { await batchDeleteFiles(keys) } catch (e) { console.warn('Batch delete error:', e) }
   }
-
-  // Clear all metadata
-  await clearAllImages()
 
   showDeleteMode.value = false
   showToast(`已删除全部 ${images.value.length} 张图片`)
