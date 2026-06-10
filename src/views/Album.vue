@@ -179,40 +179,45 @@ function onUploadSelect(action) {
 }
 
 async function onFileChange(event) {
-  const files = event.target.files
-  if (!files || files.length === 0) return
+  const fileList = event.target.files
+  if (!fileList || fileList.length === 0) return
 
   loading.value = true
   const existingHashes = await getAllHashes()
   const existingFilenames = await getAllFilenames()
+  const fileArray = Array.from(fileList).filter(f => !existingFilenames.includes(f.name))
 
+  const nameDuplicateCount = fileList.length - fileArray.length
   let added = 0
   let duplicate = 0
-  let nameDuplicate = 0
   let errors = 0
-  let total = files.length
   let completed = 0
+  const total = fileArray.length
+  let processedCount = 0 // how many files started processing
+  const totalOriginal = fileList.length
 
-  for (const file of files) {
+  // Update progress bar
+  function updateProgress() {
+    const pct = Math.floor(((added + duplicate + errors + nameDuplicateCount) / totalOriginal) * 100)
+    uploadProgress.value = Math.min(pct, 100)
+  }
+
+  /**
+   * Process a single file: convert → hash → upload → save meta
+   */
+  async function processFile(file) {
     let uploadFileObj = file
     let isConverted = false
     try {
-      // Check filename duplicate first (cheaper than hash)
-      if (existingFilenames.includes(file.name)) {
-        nameDuplicate++
-        completed++
-        continue
-      }
-
       const nameLower = file.name.toLowerCase()
       const isLivp = nameLower.endsWith('.livp')
       const isHeic = nameLower.endsWith('.heic') || nameLower.endsWith('.heif')
 
-      // ===== Front-end conversion for LIVP: extract HEIC → convert to JPEG =====
+      // LIVP: extract HEIC → convert to JPEG
       if (isLivp) {
         try {
-          processingStatus.value = `解压 ${file.name}`
-          uploadProgress.value = Math.floor((completed / total) * 100)
+          processingStatus.value = `解压 ${file.name} (${processedCount + 1}/${total})`
+          updateProgress()
 
           const zipData = await file.arrayBuffer()
           const zip = await JSZip.loadAsync(zipData)
@@ -225,38 +230,35 @@ async function onFileChange(event) {
           })
 
           if (heicEntry) {
-            processingStatus.value = `转码 ${file.name}`
+            processingStatus.value = `转码 ${file.name} (${processedCount + 1}/${total})`
             const heicBlob = await heicEntry.async('blob')
             const jpegBlob = await heic2any({ blob: heicBlob, toType: 'image/jpeg' })
             const jpegResult = Array.isArray(jpegBlob) ? jpegBlob[0] : jpegBlob
             uploadFileObj = new File([jpegResult], file.name.replace(/\.livp$/i, '.jpg'), { type: 'image/jpeg' })
-            isConverted = true
           }
-          // If no HEIC found inside, fallback to upload original LIVP
         } catch (convErr) {
-          console.warn('LIVP conversion failed for', file.name, ', uploading original', convErr)
+          console.warn('LIVP conversion failed for', file.name, convErr)
           uploadFileObj = file
         }
       }
 
-      // ===== Front-end conversion for HEIC: convert to JPEG =====
+      // HEIC: convert to JPEG
       if (isHeic && !isConverted) {
         try {
-          processingStatus.value = `转码 ${file.name}`
-          uploadProgress.value = Math.floor((completed / total) * 100)
+          processingStatus.value = `转码 ${file.name} (${processedCount + 1}/${total})`
+          updateProgress()
 
           const convertedBlob = await heic2any({ blob: file, toType: 'image/jpeg' })
           const jpegBlob = Array.isArray(convertedBlob) ? convertedBlob[0] : convertedBlob
           uploadFileObj = new File([jpegBlob], file.name.replace(/\.(heic|heif)$/i, '.jpg'), { type: 'image/jpeg' })
-          isConverted = true
         } catch (convErr) {
-          console.warn('HEIC conversion failed for', file.name, ', uploading original', convErr)
+          console.warn('HEIC conversion failed for', file.name, convErr)
           uploadFileObj = file
         }
       }
 
-      // ===== Compute hash (from JPEG for converted files) =====
-      processingStatus.value = `分析 ${file.name}`
+      // Hash & dedup
+      processingStatus.value = `分析 ${file.name} (${processedCount + 1}/${total})`
       let hash = ''
       try {
         hash = await computeHash(uploadFileObj)
@@ -264,18 +266,18 @@ async function onFileChange(event) {
         if (dupCheck.isDuplicate) {
           duplicate++
           completed++
-          continue
+          updateProgress()
+          return
         }
       } catch (hashErr) {
-        console.warn('Hash computation failed for', file.name, ', skipping dedup')
+        console.warn('Hash failed for', file.name)
         hash = (isLivp ? 'livp_' : 'skip_') + file.name
       }
 
-      // ===== Upload =====
-      processingStatus.value = `上传 ${file.name}`
-      const result = await uploadFile(uploadFileObj, (percent) => {
-        const overallPercent = Math.floor(((completed + (percent / 100)) / total) * 100)
-        uploadProgress.value = overallPercent
+      // Upload
+      processingStatus.value = `上传 ${file.name} (${processedCount + 1}/${total})`
+      const result = await uploadFile(uploadFileObj, () => {
+        updateProgress()
       })
 
       const imgUrl = getImageUrl(result.key)
@@ -292,12 +294,30 @@ async function onFileChange(event) {
       existingFilenames.push(file.name)
       added++
       completed++
+      updateProgress()
     } catch (e) {
       console.error('Error processing file:', file.name, e)
       errors++
       completed++
+      updateProgress()
     }
   }
+
+  // ===== Concurrent processing: 4 workers =====
+  const CONCURRENCY = 4
+  let fileIndex = 0
+
+  async function workerLoop() {
+    while (fileIndex < total) {
+      const file = fileArray[fileIndex++]
+      processedCount = fileIndex
+      processingStatus.value = `处理 ${fileIndex}/${total}`
+      await processFile(file)
+    }
+  }
+
+  const workers = Array.from({ length: Math.min(CONCURRENCY, total) }, () => workerLoop())
+  await Promise.all(workers)
 
   processingStatus.value = ''
   uploadProgress.value = 0
@@ -306,7 +326,7 @@ async function onFileChange(event) {
 
   const parts = []
   if (added > 0) parts.push(`成功上传 ${added} 张`)
-  if (nameDuplicate > 0) parts.push(`跳过 ${nameDuplicate} 张同名`)
+  if (nameDuplicateCount > 0) parts.push(`跳过 ${nameDuplicateCount} 张同名`)
   if (duplicate > 0) parts.push(`跳过 ${duplicate} 张重复`)
   if (errors > 0) parts.push(`${errors} 张失败`)
   const msg = parts.join('，') || '上传完成'

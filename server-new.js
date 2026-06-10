@@ -70,6 +70,9 @@ app.post("/upload", upload.single("file"), async (req, res) => {
         const jpegPath = path.join(UPLOAD_DIR, baseName + ".jpg");
         await convertHeicToJpeg(filePath, jpegPath);
 
+        // 删除原始 HEIC 文件
+        try { fs.unlinkSync(filePath); } catch {}
+
         // 返回 JPEG 的 key
         res.json({
           key: baseName + ".jpg",
@@ -115,8 +118,9 @@ app.post("/upload", upload.single("file"), async (req, res) => {
           const jpegPath = path.join(UPLOAD_DIR, baseName + ".jpg");
           await convertHeicToJpeg(heicTempPath, jpegPath);
 
-          // 删除临时 HEIC 文件
+          // 删除临时 HEIC 文件和原始 LIVP 文件
           try { fs.unlinkSync(heicTempPath); } catch {}
+          try { fs.unlinkSync(filePath); } catch {}
 
           res.json({
             key: baseName + ".jpg",
@@ -179,6 +183,7 @@ app.post("/uploads", upload.array("files", 200), async (req, res) => {
           key = baseName + ".jpg";
           url = "/uploads/" + baseName + ".jpg";
           fsize = fs.statSync(jpegPath).size;
+          try { fs.unlinkSync(f.path); } catch {}
         } catch (convErr) {
           console.error("HEIC batch convert failed:", convErr);
         }
@@ -203,6 +208,7 @@ app.post("/uploads", upload.array("files", 200), async (req, res) => {
             const jpegPath = path.join(UPLOAD_DIR, baseName + ".jpg");
             await convertHeicToJpeg(heicTempPath, jpegPath);
             try { fs.unlinkSync(heicTempPath); } catch {}
+            try { fs.unlinkSync(f.path); } catch {}
             key = baseName + ".jpg";
             url = "/uploads/" + baseName + ".jpg";
             fsize = fs.statSync(jpegPath).size;
