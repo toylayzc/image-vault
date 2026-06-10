@@ -131,7 +131,6 @@ import { showToast } from 'vant'
 import { getAllImages, addImageMeta, getAllHashes, getAllFilenames, deleteImage, clearAllImages, getSetting } from '../utils/db.js'
 import { computeHash, isDuplicate } from '../utils/hash.js'
 import { uploadFile, getImageUrl, getThumbnailUrl, batchDeleteFiles } from '../api/qiniu.js'
-import heic2any from 'heic2any'
 import JSZip from 'jszip'
 
 const processingStatus = ref('') // 显示当前处理状态
@@ -232,7 +231,7 @@ async function onFileChange(event) {
       const isLivp = nameLower.endsWith('.livp')
       const isHeic = nameLower.endsWith('.heic') || nameLower.endsWith('.heif')
 
-      // LIVP: extract HEIC → convert to JPEG
+      // LIVP: extract HEIC → upload HEIC (server handles HEIC→JPEG with heic-decode)
       if (isLivp) {
         try {
           processingStatus.value = `解压 ${file.name} (${processedCount + 1}/${total})`
@@ -249,32 +248,19 @@ async function onFileChange(event) {
           })
 
           if (heicEntry) {
-            processingStatus.value = `转码 ${file.name} (${processedCount + 1}/${total})`
+            processingStatus.value = `提取 ${file.name} (${processedCount + 1}/${total})`
             const heicBlob = await heicEntry.async('blob')
-            const jpegBlob = await heic2any({ blob: heicBlob, toType: 'image/jpeg' })
-            const jpegResult = Array.isArray(jpegBlob) ? jpegBlob[0] : jpegBlob
-            uploadFileObj = new File([jpegResult], file.name.replace(/\.livp$/i, '.jpg'), { type: 'image/jpeg' })
+            // Upload the extracted HEIC — server will convert to JPEG
+            uploadFileObj = new File([heicBlob], file.name.replace(/\.livp$/i, '.heic'), { type: 'image/heic' })
           }
         } catch (convErr) {
-          console.warn('LIVP conversion failed for', file.name, convErr)
+          console.warn('LIVP extraction failed for', file.name, convErr)
           uploadFileObj = file
         }
       }
 
-      // HEIC: convert to JPEG
-      if (isHeic && !isConverted) {
-        try {
-          processingStatus.value = `转码 ${file.name} (${processedCount + 1}/${total})`
-          updateProgress()
-
-          const convertedBlob = await heic2any({ blob: file, toType: 'image/jpeg' })
-          const jpegBlob = Array.isArray(convertedBlob) ? convertedBlob[0] : convertedBlob
-          uploadFileObj = new File([jpegBlob], file.name.replace(/\.(heic|heif)$/i, '.jpg'), { type: 'image/jpeg' })
-        } catch (convErr) {
-          console.warn('HEIC conversion failed for', file.name, convErr)
-          uploadFileObj = file
-        }
-      }
+      // HEIC: upload original file directly (server handles HEIC→JPEG with heic-decode)
+      // (no frontend conversion needed — keeps bundle small)
 
       // Hash & dedup
       processingStatus.value = `分析 ${file.name} (${processedCount + 1}/${total})`
@@ -290,7 +276,7 @@ async function onFileChange(event) {
         }
       } catch (hashErr) {
         console.warn('Hash failed for', file.name)
-        hash = (isLivp ? 'livp_' : 'skip_') + file.name
+        hash = (isLivp ? 'livp_' : isHeic ? 'heic_' : 'skip_') + file.name
       }
 
       // Upload
