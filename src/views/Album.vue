@@ -77,7 +77,7 @@
     <input
       ref="fileInput"
       type="file"
-      accept="image/*"
+      accept="image/*,.livp,.HEIC,.heic,.JPG,.jpg,.jpeg,.PNG,.png"
       multiple
       style="display: none"
       @change="onFileChange"
@@ -203,6 +203,7 @@ async function onFileChange(event) {
       // Convert HEIC/HEIF to JPEG first
       let processedFile = file
       let isHeicConverted = false
+      let isLivp = false
       const nameLower = file.name.toLowerCase()
       if (nameLower.endsWith('.heic') || nameLower.endsWith('.heif')) {
         try {
@@ -218,15 +219,25 @@ async function onFileChange(event) {
         }
       }
 
-      // Compute perceptual hash
-      const hash = await computeHash(processedFile)
+      // Apple Live Photo (.livp) — zip package, can't compute dHash
+      if (nameLower.endsWith('.livp')) {
+        isLivp = true
+      }
 
-      // Check for content duplicates
-      const dupCheck = isDuplicate(hash, existingHashes, duplicateThreshold.value)
-      if (dupCheck.isDuplicate) {
-        duplicate++
-        completed++
-        continue
+      // Compute perceptual hash (skip for .livp)
+      let hash = ''
+      if (isLivp) {
+        hash = 'livp_' + file.name
+      } else {
+        hash = await computeHash(processedFile)
+
+        // Check for content duplicates
+        const dupCheck = isDuplicate(hash, existingHashes, duplicateThreshold.value)
+        if (dupCheck.isDuplicate) {
+          duplicate++
+          completed++
+          continue
+        }
       }
 
       // Upload to server (use the converted file for HEIC)
