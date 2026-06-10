@@ -489,9 +489,22 @@ app.get("/sync", (req, res) => {
     // Remove stale meta entries (file no longer on disk)
     const diskKeys = new Set(diskFiles.map(f => f.key));
     const cleanedMeta = meta.filter(m => diskKeys.has(m.key));
-    if (cleanedMeta.length !== meta.length) {
-      saveMeta(cleanedMeta);
+
+    // Add new disk files that aren't in meta yet
+    for (const f of diskFiles) {
+      if (!metaMap[f.key]) {
+        cleanedMeta.push({
+          key: f.key,
+          filename: f.key,
+          hash: "",
+          groupIndex: -1,
+          timestamp: f.mtime,
+          downloaded: false
+        });
+      }
     }
+
+    saveMeta(cleanedMeta);
 
     res.json(result);
   } catch (e) { res.status(500).json({ error: e.message }); }
