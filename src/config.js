@@ -3,7 +3,9 @@
  * 部署前请修改为自己的配置
  */
 const config = {
-  workerUrl: 'https://snowy-union-c19b.shenzhongsuoyun.workers.dev',
+  // API 地址（前端从服务器加载，同源调用）
+  workerUrl: '',
+  cdnDomain: 'https://tgdcl88bk.hd-bkt.clouddn.com',
   cdnDomain: 'https://tgdcl88bk.hd-bkt.clouddn.com',
 
   // 图片存储路径前缀
