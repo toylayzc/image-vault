@@ -25,9 +25,12 @@
     <!-- Image count bar -->
     <div class="count-bar" v-if="images.length > 0">
       <span>共 {{ images.length }} 张图片</span>
-      <van-button size="mini" plain type="danger" @click="showDeleteMode = !showDeleteMode">
-        {{ showDeleteMode ? '完成' : '删除' }}
-      </van-button>
+      <div class="count-bar-actions">
+        <van-button v-if="showDeleteMode" size="mini" plain type="danger" icon="delete-o" @click="showDeleteAllConfirm = true" style="margin-right:8px">全部删除</van-button>
+        <van-button size="mini" plain type="danger" @click="showDeleteMode = !showDeleteMode">
+          {{ showDeleteMode ? '完成' : '删除' }}
+        </van-button>
+      </div>
     </div>
 
     <!-- Empty state -->
@@ -104,13 +107,28 @@
     >
       <p style="padding: 16px; margin: 0; text-align: center;">确定要删除这张图片吗？</p>
     </van-dialog>
+
+    <!-- Delete all confirm dialog -->
+    <van-dialog
+      v-model:show="showDeleteAllConfirm"
+      title="确认全部删除"
+      show-cancel-button
+      confirm-button-color="#ee0a24"
+      @confirm="doDeleteAll"
+    >
+      <div style="padding: 16px; text-align: center;">
+        <van-icon name="warning-o" size="48" color="#ee0a24" style="display:block;margin-bottom:10px" />
+        <p style="margin:0 0 8px;font-weight:500;font-size:15px">即将删除全部 {{ images.length }} 张图片</p>
+        <p style="margin:0;color:#999;font-size:13px">此操作不可恢复！<br/>服务器上的图片文件也将被删除。</p>
+      </div>
+    </van-dialog>
   </div>
 </template>
 
 <script setup>
 import { ref, onMounted } from 'vue'
 import { showToast } from 'vant'
-import { getAllImages, addImageMeta, getAllHashes, getAllFilenames, deleteImage, getSetting } from '../utils/db.js'
+import { getAllImages, addImageMeta, getAllHashes, getAllFilenames, deleteImage, clearAllImages, getSetting } from '../utils/db.js'
 import { computeHash, isDuplicate } from '../utils/hash.js'
 import { uploadFile, getImageUrl, getThumbnailUrl, batchDeleteFiles } from '../api/qiniu.js'
 import heic2any from 'heic2any'
@@ -123,6 +141,7 @@ const loading = ref(false)
 const showUploadSheet = ref(false)
 const showDeleteMode = ref(false)
 const showDeleteConfirm = ref(false)
+const showDeleteAllConfirm = ref(false)
 const deleteTarget = ref(null)
 const fileInput = ref(null)
 const showPreview = ref(false)
@@ -359,6 +378,30 @@ async function doDeleteImage() {
   await loadImages()
 }
 
+async function doDeleteAll() {
+  showDeleteAllConfirm.value = false
+  showToast('正在删除全部图片...')
+
+  // Collect all keys from current images
+  const keys = images.value.map(img => img.qiniuKey).filter(Boolean)
+
+  // Delete from server
+  if (keys.length > 0) {
+    try {
+      await batchDeleteFiles(keys)
+    } catch (e) {
+      console.warn('Batch delete error:', e)
+    }
+  }
+
+  // Clear all metadata
+  await clearAllImages()
+
+  showDeleteMode.value = false
+  showToast(`已删除全部 ${images.value.length} 张图片`)
+  await loadImages()
+}
+
 function previewImage(img) {
   const idx = images.value.findIndex(i => i.id === img.id)
   previewImages.value = images.value.map(i => i.qiniuUrl || i.thumbnailUrl)
@@ -394,6 +437,11 @@ function previewImage(img) {
   font-size: 13px;
   color: #666;
   border-bottom: 1px solid #f0f0f0;
+}
+.count-bar-actions {
+  display: flex;
+  align-items: center;
+  white-space: nowrap;
 }
 
 .image-grid {
