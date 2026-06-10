@@ -138,6 +138,15 @@ export async function getAllHashes() {
 }
 
 /**
+ * 获取所有已存储的文件名（用于文件名去重）
+ */
+export async function getAllFilenames() {
+  const d = await getDB()
+  const images = await d.getAll('images')
+  return images.map(img => img.filename).filter(Boolean)
+}
+
+/**
  * 获取已下载但未清理的图片（超过 retainDays）
  */
 export async function getExpiredDownloadedImages(retainDays = 3) {

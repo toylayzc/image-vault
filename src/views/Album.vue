@@ -110,7 +110,7 @@
 <script setup>
 import { ref, onMounted } from 'vue'
 import { showToast } from 'vant'
-import { getAllImages, addImageMeta, getAllHashes, deleteImage, getSetting } from '../utils/db.js'
+import { getAllImages, addImageMeta, getAllHashes, getAllFilenames, deleteImage, getSetting } from '../utils/db.js'
 import { computeHash, isDuplicate } from '../utils/hash.js'
 import { uploadFile, getImageUrl, getThumbnailUrl, batchDeleteFiles } from '../api/qiniu.js'
 import heic2any from 'heic2any'
@@ -181,17 +181,28 @@ async function onFileChange(event) {
 
   loading.value = true
   const existingHashes = await getAllHashes()
+  const existingFilenames = await getAllFilenames()
 
   let added = 0
   let duplicate = 0
+  let nameDuplicate = 0
   let errors = 0
+  let heicFallback = 0
   let total = files.length
   let completed = 0
 
   for (const file of files) {
     try {
+      // Check filename duplicate first (cheaper than hash)
+      if (existingFilenames.includes(file.name)) {
+        nameDuplicate++
+        completed++
+        continue
+      }
+
       // Convert HEIC/HEIF to JPEG first
       let processedFile = file
+      let isHeicConverted = false
       const nameLower = file.name.toLowerCase()
       if (nameLower.endsWith('.heic') || nameLower.endsWith('.heif')) {
         try {
@@ -199,18 +210,18 @@ async function onFileChange(event) {
           // heic2any may return Blob or Blob[]
           const jpegBlob = Array.isArray(convertedBlob) ? convertedBlob[0] : convertedBlob
           processedFile = new File([jpegBlob], file.name.replace(/\.(heic|heif)$/i, '.jpg'), { type: 'image/jpeg' })
+          isHeicConverted = true
         } catch (convErr) {
-          console.warn('HEIC conversion failed for', file.name, convErr)
-          errors++
-          completed++
-          continue
+          console.warn('HEIC conversion failed for', file.name, ', uploading original', convErr)
+          processedFile = file
+          heicFallback++
         }
       }
 
       // Compute perceptual hash
       const hash = await computeHash(processedFile)
 
-      // Check for duplicates
+      // Check for content duplicates
       const dupCheck = isDuplicate(hash, existingHashes, duplicateThreshold.value)
       if (dupCheck.isDuplicate) {
         duplicate++
@@ -235,6 +246,7 @@ async function onFileChange(event) {
       })
 
       existingHashes.push(hash)
+      existingFilenames.push(file.name)
       added++
       completed++
     } catch (e) {
@@ -250,7 +262,9 @@ async function onFileChange(event) {
 
   const parts = []
   if (added > 0) parts.push(`成功上传 ${added} 张`)
+  if (nameDuplicate > 0) parts.push(`跳过 ${nameDuplicate} 张同名`)
   if (duplicate > 0) parts.push(`跳过 ${duplicate} 张重复`)
+  if (heicFallback > 0) parts.push(`${heicFallback} 张 HEIC 转码失败已传原格式`)
   if (errors > 0) parts.push(`${errors} 张失败`)
   const msg = parts.join('，') || '上传完成'
   resultMessage.value = msg
