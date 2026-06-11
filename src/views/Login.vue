@@ -52,23 +52,36 @@ const password = ref('')
 const loading = ref(false)
 const errorMsg = ref('')
 
-const VALID_USERNAME = '牛牛最帅'
-const VALID_PASSWORD = 'niuniuzuishuai'
-
 async function onLogin() {
   loading.value = true
   errorMsg.value = ''
 
-  // Simulate a short delay for UX
-  await new Promise(r => setTimeout(r, 300))
+  try {
+    const resp = await fetch('/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        username: username.value,
+        password: password.value
+      })
+    })
 
-  if (username.value === VALID_USERNAME && password.value === VALID_PASSWORD) {
-    localStorage.setItem('loggedIn', 'true')
-    showToast('登录成功')
-    emit('login-success')
-  } else {
-    errorMsg.value = '账号或密码错误'
-    showToast('账号或密码错误')
+    const data = await resp.json()
+
+    if (resp.ok && data.token) {
+      localStorage.setItem('token', data.token)
+      localStorage.setItem('loggedIn', 'true')
+      localStorage.setItem('username', data.username)
+      showToast('登录成功')
+      emit('login-success')
+    } else {
+      errorMsg.value = data.error || '账号或密码错误'
+      showToast(data.error || '账号或密码错误')
+    }
+  } catch (e) {
+    console.error('Login error:', e)
+    errorMsg.value = '网络错误，请检查服务器是否可达'
+    showToast('网络错误')
   }
 
   loading.value = false

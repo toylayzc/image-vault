@@ -7,6 +7,7 @@ const crypto = require("crypto");
 const sharp = require("sharp");
 const AdmZip = require("adm-zip");
 const heicDecode = require("heic-decode");
+const jwt = require("jsonwebtoken");
 
 /**
  * Convert a HEIC/HEIF file buffer to JPEG using heic-decode + sharp
@@ -17,6 +18,30 @@ async function convertHeicToJpeg(inputPath, outputPath) {
   await sharp(result.data, {
     raw: { width: result.width, height: result.height, channels: 4 }
   }).jpeg({ quality: 90 }).toFile(outputPath);
+}
+
+const JWT_SECRET = process.env.JWT_SECRET || "image-vault-secret-key-2026";
+const VALID_USERNAME = "牛牛最帅";
+const VALID_PASSWORD = "niuniuzuishuai";
+
+// JWT 认证中间件
+function authMiddleware(req, res, next) {
+  // 跳过 /login 和健康检查
+  if (req.path === "/login" || (req.method === "GET" && req.path === "/")) {
+    return next();
+  }
+  const authHeader = req.headers.authorization;
+  if (!authHeader || !authHeader.startsWith("Bearer ")) {
+    return res.status(401).json({ error: "未登录，请先登录" });
+  }
+  const token = authHeader.slice(7);
+  try {
+    const decoded = jwt.verify(token, JWT_SECRET);
+    req.user = decoded;
+    next();
+  } catch (e) {
+    return res.status(401).json({ error: "登录已过期，请重新登录" });
+  }
 }
 
 const app = express();
@@ -85,8 +110,30 @@ const upload = multer({
 
 app.use(cors());
 app.use(express.json({ limit: "10mb" }));
+app.use(authMiddleware);
 
 app.get("/", (req, res) => res.json({ status: "ok", message: "API running" }));
+
+// 登录接口：验证账号密码，返回 JWT Token
+app.post("/login", (req, res) => {
+  try {
+    const { username, password } = req.body;
+    if (!username || !password) {
+      return res.status(400).json({ error: "请输入账号和密码" });
+    }
+    if (username !== VALID_USERNAME || password !== VALID_PASSWORD) {
+      return res.status(401).json({ error: "账号或密码错误" });
+    }
+    const token = jwt.sign(
+      { username, loginAt: Date.now() },
+      JWT_SECRET,
+      { expiresIn: "7d" }
+    );
+    res.json({ success: true, token, username });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
 
 /**
  * 处理上传文件：

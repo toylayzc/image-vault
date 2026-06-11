@@ -96,9 +96,13 @@ async function onManualCleanup() {
   try {
     let cleanedShares = 0
     try {
+      const token = localStorage.getItem('token')
       const resp = await fetch('/cleanup-expired-shares', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 
+          'Content-Type': 'application/json',
+          ...(token ? { 'Authorization': 'Bearer ' + token } : {})
+        },
         body: JSON.stringify({ retainDays: retainDays.value })
       })
       const result = await resp.json()
@@ -118,7 +122,9 @@ function onClearAll() {
 }
 
 function onLogout() {
+  localStorage.removeItem('token')
   localStorage.removeItem('loggedIn')
+  localStorage.removeItem('username')
   window.location.reload()
 }
 

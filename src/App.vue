@@ -33,7 +33,7 @@ const Login = defineAsyncComponent(() => import('./views/Login.vue'))
 import config from './config.js'
 
 const activeTab = ref('album')
-const isLoggedIn = ref(!!localStorage.getItem('loggedIn'))
+const isLoggedIn = ref(!!localStorage.getItem('token'))
 
 const isSharedView = computed(() => {
   return window.location.hash.startsWith('#/share/')
@@ -45,9 +45,13 @@ onMounted(async () => {
 
   try {
     // Cleanup expired shares
+    const token = localStorage.getItem('token')
     const resp = await fetch('/cleanup-expired-shares', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 
+        'Content-Type': 'application/json',
+        ...(token ? { 'Authorization': 'Bearer ' + token } : {})
+      },
       body: JSON.stringify({ retainDays: config.retainDays })
     })
     const result = await resp.json()

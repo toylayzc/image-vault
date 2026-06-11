@@ -5,6 +5,32 @@
 import config from '../config.js'
 
 /**
+ * 带认证的 fetch 封装，自动附加 JWT Token
+ */
+function authFetch(url, options = {}) {
+  const token = localStorage.getItem('token')
+  const headers = options.headers || {}
+  if (token) {
+    headers['Authorization'] = 'Bearer ' + token
+  }
+  // If it's FormData, don't set Content-Type (browser sets it with boundary)
+  if (options.body instanceof FormData) {
+    delete headers['Content-Type']
+  }
+  return fetch(url, { ...options, headers }).then(resp => {
+    if (resp.status === 401) {
+      // Token 过期或无效，跳转到登录页
+      localStorage.removeItem('token')
+      localStorage.removeItem('loggedIn')
+      localStorage.removeItem('username')
+      window.location.reload()
+      throw new Error('登录已过期')
+    }
+    return resp
+  })
+}
+
+/**
  * 上传单张图片到服务器
  * @param {File} file
  * @param {Function} onProgress 进度回调
@@ -18,6 +44,12 @@ export async function uploadFile(file, onProgress) {
     const xhr = new XMLHttpRequest()
     xhr.open('POST', '/upload')
 
+    // 附加 JWT Token
+    const token = localStorage.getItem('token')
+    if (token) {
+      xhr.setRequestHeader('Authorization', 'Bearer ' + token)
+    }
+
     xhr.upload.onprogress = (e) => {
       if (e.lengthComputable && onProgress) {
         onProgress(Math.floor((e.loaded / e.total) * 100))
@@ -27,6 +59,13 @@ export async function uploadFile(file, onProgress) {
     xhr.onload = () => {
       if (xhr.status === 200) {
         resolve(JSON.parse(xhr.responseText))
+      } else if (xhr.status === 401) {
+        // Token 过期，跳转到登录页
+        localStorage.removeItem('token')
+        localStorage.removeItem('loggedIn')
+        localStorage.removeItem('username')
+        window.location.reload()
+        reject(new Error('登录已过期'))
       } else {
         reject(new Error('上传失败: ' + xhr.status))
       }
@@ -45,7 +84,7 @@ export async function uploadFiles(files, onProgress) {
   for (const file of files) {
     formData.append('files', file)
   }
-  const resp = await fetch('/uploads', { method: 'POST', body: formData })
+  const resp = await authFetch('/uploads', { method: 'POST', body: formData })
   if (!resp.ok) throw new Error('上传失败: ' + resp.status)
   return await resp.json()
 }
@@ -68,7 +107,7 @@ export function getThumbnailUrl(key) {
  * 获取服务器所有文件列表
  */
 export async function fetchAllFiles() {
-  const resp = await fetch('/files')
+  const resp = await authFetch('/files')
   if (!resp.ok) throw new Error('获取文件列表失败')
   const data = await resp.json()
   return data.items || []
@@ -79,7 +118,7 @@ export async function fetchAllFiles() {
  * POST /save-share-data → 用指定 shareId 保存到 shares/ 目录
  */
 export async function saveShareData(shareId, groups) {
-  const resp = await fetch('/save-share-data', {
+  const resp = await authFetch('/save-share-data', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ shareId, groups })
@@ -93,7 +132,7 @@ export async function saveShareData(shareId, groups) {
  */
 export async function fetchShareData(shareId) {
   try {
-    const resp = await fetch('/share-data/' + shareId)
+    const resp = await authFetch('/share-data/' + shareId)
     if (!resp.ok) return null
     return await resp.json()
   } catch { return null }
@@ -103,7 +142,7 @@ export async function fetchShareData(shareId) {
  * 删除分享数据
  */
 export async function deleteShareData(shareId) {
-  const resp = await fetch('/share-data/' + shareId, { method: 'DELETE' })
+  const resp = await authFetch('/share-data/' + shareId, { method: 'DELETE' })
   if (!resp.ok) console.warn('删除分享数据失败:', resp.status)
   return await resp.json()
 }
@@ -113,7 +152,7 @@ export async function deleteShareData(shareId) {
  */
 export async function batchDeleteFiles(keys) {
   if (!keys || keys.length === 0) return
-  const resp = await fetch('/batch-delete', {
+  const resp = await authFetch('/batch-delete', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ keys })
@@ -135,7 +174,7 @@ export function generateId() {
  * 从服务器获取全部图片列表（合并元数据）
  */
 export async function fetchSyncData() {
-  const resp = await fetch('/sync')
+  const resp = await authFetch('/sync')
   if (!resp.ok) throw new Error('同步数据失败')
   return await resp.json()
 }
@@ -144,7 +183,7 @@ export async function fetchSyncData() {
  * 添加/更新单张图片元数据
  */
 export async function addMeta(key, filename, hash) {
-  await fetch('/meta/add', {
+  await authFetch('/meta/add', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ key, filename, hash })
@@ -156,7 +195,7 @@ export async function addMeta(key, filename, hash) {
  */
 export async function batchUpdateMeta(updates) {
   if (!updates || updates.length === 0) return
-  const resp = await fetch('/meta/batch-update', {
+  const resp = await authFetch('/meta/batch-update', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ updates })
