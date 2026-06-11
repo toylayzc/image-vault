@@ -26,10 +26,13 @@ const VALID_PASSWORD = "niuniuzuishuai";
 
 // JWT 认证中间件
 function authMiddleware(req, res, next) {
-  // 跳过 /login 和健康检查
-  if (req.path === "/login" || (req.method === "GET" && req.path === "/")) {
-    return next();
-  }
+  // 公开路由：无需登录即可访问
+  if (req.path === "/login") return next();
+  if (req.method === "GET" && req.path === "/") return next();
+  // 缩略图：img 标签直接请求，不带 Token，需公开
+  if (req.path.startsWith("/thumbnail/")) return next();
+  // 分享数据：查看分享的人无需登录
+  if (req.method === "GET" && req.path.startsWith("/share-data/")) return next();
   const authHeader = req.headers.authorization;
   if (!authHeader || !authHeader.startsWith("Bearer ")) {
     return res.status(401).json({ error: "未登录，请先登录" });
